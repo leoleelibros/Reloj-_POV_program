@@ -1,0 +1,20 @@
+build/
+sdkconfig
+sdkconfig.old
+# Componentes gestionados automáticamente por ESP-IDF 5.x
+managed_components/
+dependencies.lock
+
+# Archivos basura de compilación que a veces escapan
+*.map
+*.elf
+*.bin
+*.hex
+
+# Archivos temporales de Python (ESP-IDF usa mucho Python)
+__pycache__/
+*.pyc
+
+# Archivos de sistema y configuración personal del editor
+.DS_Store
+.vscode/
