@@ -15,6 +15,6 @@ dependencies.lock
 __pycache__/
 *.pyc
 
-# Archivos de sistema y configuración personal del editor
+# Archivos de sistema y configuración pgersonal del editor
 .DS_Store
 .vscode/
