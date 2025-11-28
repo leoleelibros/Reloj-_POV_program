@@ -13,13 +13,22 @@
 // --- CONFIGURACIÓN ---
 #define SENSOR_HALL_GPIO 15
 #define MCPWM_CLK_SRC_HZ 80000000 // 80 MHz
+#define FILTER_WINDOW_SIZE 10 //para el filtro moving average
 
 static const char *TAG = "POV_SENDER";
-
+//----------------Estructura para el envio de datos al esp-nowx 
 typedef struct {
     float rpm;
     float freq;
 } message_data_t;
+
+float freq_history[FILTER_WINDOW_SIZE] = {0}; // Buffer
+int history_idx = 0;                         // Puntero del buffer
+float freq_sum = 0.0;                         // Suma acumulada
+float freq_average = 0.0;
+
+volatile float g_freq_average = 0.0;
+volatile float g_freq_instant = 0.0;
 
 // Dirección Broadcast
 uint8_t broadcast_mac[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
@@ -48,33 +57,48 @@ static bool Capture_Callback_Function(mcpwm_cap_channel_handle_t cap_chan, const
 }
 
 static void Tarea_Proceso(void *parameter){
-    message_data_t data_to_send;
-    float rpm_medido;
+    
+    // Variables para el Moving Average
+    float freq_medido;
     while (true) {
         // Esperamos pulso (Timeout 500ms)
         BaseType_t notificacion_recibida = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(300));
         
         if (notificacion_recibida == pdTRUE) {
             // Calcular
-            g_freq = (float)MCPWM_CLK_SRC_HZ / (float)TicksDiferencia;
-            rpm_medido = g_freq * 60.0f;
-            if (rpm_medido < 800){
-                g_rpm=rpm_medido;
+            freq_medido = (float)MCPWM_CLK_SRC_HZ / (float)TicksDiferencia;
+            if(freq_medido < 30.0){
+                g_freq =freq_medido;
             }
+            g_rpm = g_freq * 60.0f;
         } else {
             g_rpm = 0.0f; 
             g_freq = 0.0f;
         }
+        // 2. ALGORITMO MOVING AVERAGE (Buffer Circular)
+        freq_sum -= freq_history[history_idx];       // Restar viejo
+        freq_history[history_idx] = g_freq;    // Meter nuevo
+        freq_sum += g_freq;           // Sumar nuevo
+        
+        history_idx = (history_idx + 1) % FILTER_WINDOW_SIZE; // Avanzar índice
+        
+        // ACTUALIZAR VARIABLE GLOBAL COMPARTIDA
+        g_freq_average = freq_sum / FILTER_WINDOW_SIZE;
+    }
+}
+static void Tarea_mandar_datos(void *parameter){
+    message_data_t data_to_send;
+    while(true){
+        vTaskDelay(pdMS_TO_TICKS(1000));
 
-        // Enviar
-        data_to_send.rpm = g_rpm;
-        data_to_send.freq = g_freq;
+        // Preparar datos filtrados
+        data_to_send.rpm = g_freq_average*60;
+        data_to_send.freq = g_freq_average; // Mandamos freq cruda o filtrada, tú decides
+
+        // Enviar ESP-NOW
         esp_now_send(broadcast_mac, (uint8_t *) &data_to_send, sizeof(data_to_send));
         
-        // Log para verificar que el ruido se fue
-        if(notificacion_recibida == pdTRUE) {
-             ESP_LOGI(TAG, "RPM: %.2f (Hz: %.2f)", g_rpm, g_freq);
-        }
+        
     }
 }
 static void wifi_espnow_init(void) {
@@ -114,7 +138,7 @@ void app_main(void)
     // 3. Crear Tarea
     TaskHandle_t Handle_Tarea;
     xTaskCreate(Tarea_Proceso, "ProcesoPOV", 4096, NULL, 5, &Handle_Tarea);
-
+    xTaskCreate(Tarea_mandar_datos, "Datos_a_EspNow",4096,NULL,5,NULL);
     // 4. Configurar MCPWM (Lectura RPM) en PIN 15
     mcpwm_cap_timer_handle_t Handle_CaptureTimer = NULL;
     mcpwm_capture_timer_config_t Configuracion_CaptureTimer = {
