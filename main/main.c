@@ -1,5 +1,11 @@
+#include <stdint.h>
 #include <stdio.h>
-#include <string.h>
+#include <stdbool.h>
+#include <unistd.h>
+#include "driver/gpio.h"
+#include "driver/gptimer.h"
+#include "esp_event.h"
+#include "esp_intr_types.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_system.h"
@@ -9,29 +15,189 @@
 #include "esp_now.h"
 #include "driver/gpio.h"
 #include "driver/mcpwm_prelude.h"
+#include "esp_intr_alloc.h"
 
-// --- CONFIGURACIÓN ---
+//velocidad provisional rps
+uint64_t Vel = 13;
+uint64_t alarm_count_us;
+//contador
+uint8_t i=0;
+//leds
+//18 NO
+#define LED1 GPIO_NUM_13
+#define LED2 GPIO_NUM_12
+#define LED3 GPIO_NUM_14
+#define LED4 GPIO_NUM_27
+#define LED5 GPIO_NUM_26
+#define LED6 GPIO_NUM_25
+#define LED7 GPIO_NUM_33
+//leds del 2do palo
+#define LED1b GPIO_NUM_32
+#define LED2b GPIO_NUM_23
+#define LED3b GPIO_NUM_22
+#define LED4b GPIO_NUM_21
+#define LED5b GPIO_NUM_19
+#define LED6b GPIO_NUM_5
+#define LED7b GPIO_NUM_4
+
+//para el sensor efecto hall
 #define SENSOR_HALL_GPIO 15
 #define MCPWM_CLK_SRC_HZ 80000000 // 80 MHz
-
-static const char *TAG = "POV_SENDER";
-
-typedef struct {
-    float rpm;
-    float freq;
-} message_data_t;
-
-// Dirección Broadcast
-uint8_t broadcast_mac[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-
-// Variables Globales
+#define FILTER_WINDOW_SIZE 2 //para el filtro moving average
 uint32_t CapturaActual = 0;
 uint32_t CapturaAnterior = 0;
 uint32_t TicksDiferencia = 0;
 static float g_rpm = 0.0;
 static float g_freq = 0.0;
+float freq_history[FILTER_WINDOW_SIZE] = {0}; // Buffer
+int history_idx = 0;                         // Puntero del buffer
+float freq_sum = 0.0;                         // Suma acumulada
+float freq_average = 0.0;
+volatile float g_freq_average = 0.0;
+//handlers tasks
+TaskHandle_t Handle_Tarea_Actualizacion_Matriz = NULL;
+TaskHandle_t Handle_Tarea_Calculo = NULL;
+gptimer_handle_t gptimer_grado = NULL;
 
-// --- CALLBACK CON DEBOUNCING ---
+//matriz principal
+uint16_t M[180][7];
+uint16_t M1[180][7];
+//Hora
+uint8_t Time = 14;
+uint8_t TimeMin = 54;
+//Matrices para los numeros
+uint16_t Pun[10][7]={
+	{0,0,0,0,0,0,0}, 
+	{0,0,0,0,0,0,0},
+	{0,0,0,0,0,0,0},
+	{0,0,0,0,0,0,0},
+	{0,1,0,0,0,1,0},
+	{1,1,1,0,1,1,1},
+	{0,1,0,0,0,1,0},
+	{0,0,0,0,0,0,0},
+	{0,0,0,0,0,0,0},
+	{0,0,0,0,0,0,0}
+};
+uint16_t N0[10][7]={
+	{0,0,0,0,0,0,0}, 
+	{0,0,1,1,1,0,0},
+	{0,1,1,0,1,1,0},
+	{1,1,0,0,0,1,1},
+	{1,0,0,0,0,0,1},
+	{1,0,0,0,0,0,1},
+	{1,1,0,0,0,1,1},
+	{0,1,1,0,1,1,0},
+	{0,0,1,1,1,0,0},
+	{0,0,0,0,0,0,0}
+};
+uint16_t N1[10][7]={
+	{0,0,0,0,0,0,0}, 
+	{0,0,0,0,0,0,0},
+	{0,0,0,0,0,0,1},
+	{0,0,0,0,0,0,1},
+	{1,1,1,1,1,1,1},
+	{1,1,1,1,1,1,1},
+	{0,1,1,0,0,0,1},
+	{0,0,1,0,0,0,1},
+	{0,0,0,0,0,0,0},
+	{0,0,0,0,0,0,0}
+};
+uint16_t N2[10][7]={
+	{0,0,0,0,0,0,0}, 
+	{0,1,0,0,0,0,1},
+	{1,1,1,0,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,1,0,1},
+	{1,1,0,0,1,1,1},
+	{0,1,0,0,0,1,1},
+	{0,0,0,0,0,0,0}
+};
+uint16_t N3[10][7]={
+	{0,0,0,0,0,0,0}, 
+	{0,0,0,0,0,0,0},
+	{0,1,1,1,1,1,0},
+	{1,1,1,1,1,1,1},
+	{1,1,0,1,0,1,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,1,0,0,0,1,1},
+	{0,1,0,0,0,1,0},
+	{0,0,0,0,0,0,0}
+};
+uint16_t N4[10][7]={
+	{0,0,0,0,0,0,0}, 
+	{0,0,1,1,1,1,1},
+	{0,0,1,1,1,1,1},
+	{0,0,1,1,0,0,0},
+	{0,0,1,1,0,0,0},
+	{0,0,1,1,0,0,0},
+	{0,0,1,1,0,0,0},
+	{1,1,1,1,0,1,1},
+	{1,1,1,1,1,1,1},
+	{0,0,0,0,0,0,0}
+};
+uint16_t N5[10][7]={
+	{0,0,0,0,0,0,0}, 
+	{1,1,0,0,1,1,0},
+	{1,1,0,1,1,1,1},
+	{1,1,0,1,0,0,1},
+	{1,1,0,1,0,0,1},
+	{1,1,0,1,0,0,1},
+	{1,1,0,1,0,0,1},
+	{1,1,0,1,0,0,1},
+	{1,1,1,1,0,1,1},
+	{0,0,0,0,0,0,0}
+};
+uint16_t N6[10][7]={
+	{0,0,0,0,0,0,0}, 
+	{0,1,0,0,1,1,0},
+	{1,1,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{0,1,1,1,1,1,0},
+	{0,0,0,0,0,0,0}
+};
+uint16_t N7[10][7]={
+	{0,0,0,0,0,0,0}, 
+	{1,1,0,0,0,0,0},
+	{1,1,1,0,0,0,0},
+	{1,0,1,1,0,0,0},
+	{1,0,0,1,1,0,0},
+	{1,0,0,0,1,1,0},
+	{1,0,0,0,0,1,1},
+	{1,0,0,0,0,0,1},
+	{0,0,0,0,0,0,0},
+	{0,0,0,0,0,0,0}
+};
+uint16_t N8[10][7]={
+	{0,0,0,0,0,0,0}, 
+	{0,1,1,0,1,1,0},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{0,1,1,0,1,1,0},
+	{0,0,0,0,0,0,0}
+};
+uint16_t N9[10][7]={
+	{0,0,0,0,0,0,0}, 
+	{0,1,1,1,1,0,0},
+	{1,1,1,1,1,1,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{0,1,1,0,0,1,0},
+	{0,0,0,0,0,0,0}
+};
 static bool Capture_Callback_Function(mcpwm_cap_channel_handle_t cap_chan, const mcpwm_capture_event_data_t *edata, void *user_data){
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
     uint32_t current_capture = edata->cap_value;
@@ -39,83 +205,310 @@ static bool Capture_Callback_Function(mcpwm_cap_channel_handle_t cap_chan, const
     CapturaActual = current_capture;
     CapturaAnterior = CapturaActual;
     TicksDiferencia = diff; 
-    
-    // 4. Despertar Tarea
-    TaskHandle_t Tarea_a_Renaudar = (TaskHandle_t)user_data;
-    vTaskNotifyGiveFromISR(Tarea_a_Renaudar, &xHigherPriorityTaskWoken);
-    
+    i=0;
+    vTaskNotifyGiveFromISR(Handle_Tarea_Calculo, &xHigherPriorityTaskWoken);
+
     return xHigherPriorityTaskWoken == pdTRUE;
 }
-
 static void Tarea_Proceso(void *parameter){
-    message_data_t data_to_send;
-    float rpm_medido;
+    
+    // Variables para el Moving Average
+    float freq_medido;
     while (true) {
         // Esperamos pulso (Timeout 500ms)
         BaseType_t notificacion_recibida = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(300));
         
         if (notificacion_recibida == pdTRUE) {
             // Calcular
-            g_freq = (float)MCPWM_CLK_SRC_HZ / (float)TicksDiferencia;
-            rpm_medido = g_freq * 60.0f;
-            if (rpm_medido < 800){
-                g_rpm=rpm_medido;
+            freq_medido = (float)MCPWM_CLK_SRC_HZ / (float)TicksDiferencia;
+            if(freq_medido < 40.0){
+                g_freq =freq_medido;
             }
+            g_rpm = g_freq * 60.0f;
         } else {
             g_rpm = 0.0f; 
             g_freq = 0.0f;
         }
-
-        // Enviar
-        data_to_send.rpm = g_rpm;
-        data_to_send.freq = g_freq;
-        esp_now_send(broadcast_mac, (uint8_t *) &data_to_send, sizeof(data_to_send));
+        // 2. ALGORITMO MOVING AVERAGE (Buffer Circular)
+        freq_sum -= freq_history[history_idx];       // Restar viejo
+        freq_history[history_idx] = g_freq;    // Meter nuevo
+        freq_sum += g_freq;           // Sumar nuevo
         
-        // Log para verificar que el ruido se fue
-        if(notificacion_recibida == pdTRUE) {
-             ESP_LOGI(TAG, "RPM: %.2f (Hz: %.2f)", g_rpm, g_freq);
+        history_idx = (history_idx + 1) % FILTER_WINDOW_SIZE; // Avanzar índice
+        
+        // ACTUALIZAR VARIABLE GLOBAL COMPARTIDA
+        g_freq_average = freq_sum / FILTER_WINDOW_SIZE;
+        // 3. ACTUALIZAR TIEMPO POR GRADO (Mover la lógica del temporizador aquí)
+        if (g_freq_average > 0.1) {
+            // Calcular el nuevo tiempo en microsegundos (ticks)
+            alarm_count_us = (uint64_t)(1000000.0 / (g_freq_average * 180.0));
+            // Aplicar un límite inferior para evitar tiempos irrazonablemente cortos.
+            if (alarm_count_us < 300) { // Límite inferior de 100 us (10kHz)
+                alarm_count_us = 300;
+            }
+        } else {
+            alarm_count_us = 400;
         }
+        gptimer_alarm_config_t CambioGrado = {
+            .alarm_count = alarm_count_us,
+            .reload_count = 0,
+            .flags.auto_reload_on_alarm = true
+        };
+        gptimer_set_alarm_action(gptimer_grado, &CambioGrado);
     }
 }
-static void wifi_espnow_init(void) {
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_start());
-
-    // Iniciar ESP-NOW
-    ESP_ERROR_CHECK(esp_now_init());
-    
-    // Registrar el Peer de Broadcast
-    esp_now_peer_info_t peerInfo = {};
-    memcpy(peerInfo.peer_addr, broadcast_mac, 6);
-    peerInfo.channel = 0;  // 0 = usa el canal actual del wifi
-    peerInfo.encrypt = false;
-    
-    ESP_ERROR_CHECK(esp_now_add_peer(&peerInfo));
-    ESP_LOGI(TAG, "ESP-NOW Iniciado en modo Broadcast");
+static bool IRAM_ATTR CambioGradoCallback(gptimer_handle_t CambioGrado, const gptimer_alarm_event_data_t *edata, void *user_data){
+	BaseType_t high_task_awoken = pdFALSE;
+		gpio_set_level(LED1, M[i][0]);
+        gpio_set_level(LED2, M[i][1]);
+        gpio_set_level(LED3, M[i][2]);
+        gpio_set_level(LED4, M[i][3]);
+        gpio_set_level(LED5, M[i][4]);
+        gpio_set_level(LED6, M[i][5]);
+        gpio_set_level(LED7, M[i][6]);
+        //segunda tira de leds
+        gpio_set_level(LED1b, M1[i][0]);
+        gpio_set_level(LED2b, M1[i][1]);
+        gpio_set_level(LED3b, M1[i][2]);
+        gpio_set_level(LED4b, M1[i][3]);
+        gpio_set_level(LED5b, M1[i][4]);
+        gpio_set_level(LED6b, M1[i][5]);
+        gpio_set_level(LED7b, M1[i][6]);
+        
+        // 2. Incrementar y resetear el contador
+        i++;
+        if (i >= 180) { 
+            i=0;
+        }
+	return (high_task_awoken == pdTRUE); 						
+}
+static void Tarea_Actualizar_Matriz(void *parameter){
+    while (true) {
+        // Esperar la notificación de la ISR (AumentoHoraCallback)
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY); // Esperar indefinidamente
+        
+        uint8_t Hora = Time/10;
+        uint8_t HoraRes = Time%10;
+        uint8_t Min = TimeMin/10;
+        uint8_t MinRes = TimeMin%10;
+        // Ejecutar el trabajo pesado: Copiar la matriz
+        for (int y = 0; y<10; y++) {
+            for (int j = 0; j<7; j++) {
+                switch (Hora) {
+                    case 0:
+                    M[y+100][j]=N0[y][j];
+                    M1[y+10][j]=N0[y][j]; //para cuando los leds que llevan el sensor estan en 0 estos estan en 180(90) y viceversa
+                    break;
+                    case 1:
+                    M[y+100][j]=N1[y][j];
+                    M1[y+10][j]=N1[y][j];
+                    break;
+                    case 2:
+                    M[y+100][j]=N2[y][j];
+                    M1[y+10][j]=N2[y][j];
+                    break;
+                    case 3:
+                    M[y+100][j]=N3[y][j];
+                    M1[y+10][j]=N3[y][j];
+                    break;
+                    case 4:
+                    M[y+100][j]=N4[y][j];
+                    M1[y+10][j]=N4[y][j];
+                    break;
+                    case 5:
+                    M[y+100][j]=N5[y][j];
+                    M1[y+10][j]=N5[y][j];
+                    break;
+                    case 6:
+                    M[y+100][j]=N6[y][j];
+                    M1[y+10][j]=N6[y][j];
+                    break;
+                    case 7:
+                    M[y+100][j]=N7[y][j];
+                    M1[y+10][j]=N7[y][j];
+                    break;
+                    case 8:
+                    M[y+100][j]=N8[y][j];
+                    M1[y+10][j]=N8[y][j];
+                    break;
+                    case 9:
+                    M[y+100][j]=N9[y][j];
+                    M1[y+10][j]=N9[y][j];
+                    break;
+                }
+                switch (HoraRes) {
+                    case 0:
+                    M[y+90][j]=N0[y][j];
+                    M1[y][j]=N0[y][j]; //para cuando los leds que llevan el sensor estan en 0 estos estan en 180(90) y viceversa
+                    break;
+                    case 1:
+                    M[y+90][j]=N1[y][j];
+                    M1[y][j]=N1[y][j];
+                    break;
+                    case 2:
+                    M[y+90][j]=N2[y][j];
+                    M1[y][j]=N2[y][j];
+                    break;
+                    case 3:
+                    M[y+90][j]=N3[y][j];
+                    M1[y][j]=N3[y][j];
+                    break;
+                    case 4:
+                    M[y+90][j]=N4[y][j];
+                    M1[y][j]=N4[y][j];
+                    break;
+                    case 5:
+                    M[y+90][j]=N5[y][j];
+                    M1[y][j]=N5[y][j];
+                    break;
+                    case 6:
+                    M[y+90][j]=N6[y][j];
+                    M1[y][j]=N6[y][j];
+                    break;
+                    case 7:
+                    M[y+90][j]=N7[y][j];
+                    M1[y][j]=N7[y][j];
+                    break;
+                    case 8:
+                    M[y+90][j]=N8[y][j];
+                    M1[y][j]=N8[y][j];
+                    break;
+                    case 9:
+                    M[y+90][j]=N9[y][j];
+                    M1[y][j]=N9[y][j];
+                    break;
+                }
+                M[y+80][j]=Pun[y][j];
+                M1[y+170][j]=Pun[y][j];
+                switch (Min) {
+					case 0:
+					M[y+70][j]=N0[y][j];
+                    M1[y+160][j]=N0[y][j];
+                    break;
+                    case 1:
+					M[y+70][j]=N1[y][j];
+                    M1[y+160][j]=N1[y][j];
+                    break;
+                    case 2:
+					M[y+70][j]=N2[y][j];
+                    M1[y+160][j]=N2[y][j];
+                    break;
+                    case 3:
+					M[y+70][j]=N3[y][j];
+                    M1[y+160][j]=N3[y][j];
+                    break;
+                    case 4:
+					M[y+70][j]=N4[y][j];
+                    M1[y+160][j]=N4[y][j];
+                    break;
+                    case 5:
+					M[y+70][j]=N5[y][j];
+                    M1[y+160][j]=N5[y][j];
+                    break;
+                    case 6:
+					M[y+70][j]=N6[y][j];
+                    M1[y+160][j]=N6[y][j];
+                    break;
+                    case 7:
+					M[y+70][j]=N7[y][j];
+                    M1[y+160][j]=N7[y][j];
+                    break;
+                    case 8:
+					M[y+70][j]=N8[y][j];
+                    M1[y+160][j]=N8[y][j];
+                    break;
+                    case 9:
+					M[y+70][j]=N9[y][j];
+                    M1[y+160][j]=N9[y][j];
+                    break;
+				}
+				switch (MinRes) {
+					case 0:
+					M[y+60][j]=N0[y][j];
+                    M1[y+150][j]=N0[y][j];
+                    break;
+                    case 1:
+					M[y+60][j]=N1[y][j];
+                    M1[y+150][j]=N1[y][j];
+                    break;
+                    case 2:
+					M[y+60][j]=N2[y][j];
+                    M1[y+150][j]=N2[y][j];
+                    break;
+                    case 3:
+					M[y+60][j]=N3[y][j];
+                    M1[y+150][j]=N3[y][j];
+                    break;
+                    case 4:
+					M[y+60][j]=N4[y][j];
+                    M1[y+150][j]=N4[y][j];
+                    break;
+                    case 5:
+					M[y+60][j]=N5[y][j];
+                    M1[y+150][j]=N5[y][j];
+                    break;
+                    case 6:
+					M[y+60][j]=N6[y][j];
+                    M1[y+150][j]=N6[y][j];
+                    break;
+                    case 7:
+					M[y+60][j]=N7[y][j];
+                    M1[y+150][j]=N7[y][j];
+                    break;
+                    case 8:
+					M[y+60][j]=N8[y][j];
+                    M1[y+150][j]=N8[y][j];
+                    break;
+                    case 9:
+					M[y+60][j]=N9[y][j];
+                    M1[y+150][j]=N9[y][j];
+                    break;
+                    }
+            }
+        }
+      
+        // Si quieres que el tiempo avance, hazlo aquí (después de la copia)
+        // Time = (Time + 1) % 4; // Por ejemplo, para 0, 1, 2, 3
+    }
 }
 void app_main(void)
 {
-    // 1. NVS Flash (Necesario para WiFi)
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(ret);
-
-    // 2. Iniciar WiFi y ESP-NOW
-    wifi_espnow_init();
-
-    // 3. Crear Tarea
-    TaskHandle_t Handle_Tarea;
-    xTaskCreate(Tarea_Proceso, "ProcesoPOV", 4096, NULL, 5, &Handle_Tarea);
-
-    // 4. Configurar MCPWM (Lectura RPM) en PIN 15
+	//gpios
+	gpio_config_t io_conf;
+	io_conf.pin_bit_mask = (1ULL<<LED1b | 1ULL<<LED2b | 1ULL<<LED3b | 1ULL<<LED4b | 1ULL<<LED5b | 1ULL<<LED6b | 1ULL<<LED7b | 1ULL<<LED7 | 1ULL<<LED6 | 1ULL<<LED5 | 1ULL<<LED4 | 1ULL<<LED3 | 1ULL<<LED1 | 1ULL<<LED2);
+	io_conf.mode = GPIO_MODE_OUTPUT;
+	io_conf.pull_up_en = GPIO_PULLUP_DISABLE;       // GPIO_PULLUP_ENABLE
+	io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;   // GPIO_PULLDOWN_ENABLE
+	io_conf.intr_type = GPIO_INTR_DISABLE;      // GPIO_INTR_POSEDGE, GPIO_INTR_NEGEDGE, GPIO_INTR_ANYEDG, GPIO_INTR_LOW_LEVEL, GPIO_INTR_HIGH_LEVEL
+	gpio_config(&io_conf);
+	//timers
+	gptimer_config_t Timer_Config = {
+		.clk_src = GPTIMER_CLK_SRC_APB,			
+		.direction = GPTIMER_COUNT_UP, 			
+		.resolution_hz = 1000000,				// Frecuencia de reloj del GPTimer.																						
+	};
+	//gptimer_handle_t gptimer_grado = NULL; esta se volvio global para poder usarlo en Tarea_proceso
+	gptimer_new_timer(&Timer_Config, &gptimer_grado);
+	//calculo de duracion del timer
+	float alarm_duration_s = 1.0f / ( (float)Vel * 180.0f );
+    alarm_count_us = (uint64_t)(alarm_duration_s * 1000000.0f);//esta parte es nesesaria para que sea un entero
+    
+		gptimer_alarm_config_t CambioGrado = {
+		.alarm_count = alarm_count_us,  //micro segundos
+		.reload_count = 0,
+		.flags.auto_reload_on_alarm = true
+	};
+	gptimer_set_alarm_action(gptimer_grado, &CambioGrado);
+	gptimer_event_callbacks_t EventCambioGrado = {
+		.on_alarm = CambioGradoCallback,
+	};
+	gptimer_register_event_callbacks(gptimer_grado, &EventCambioGrado, NULL);
+	//tareas
+	xTaskCreatePinnedToCore(Tarea_Actualizar_Matriz, "ActualizarMatriz", 2048, NULL, 4, &Handle_Tarea_Actualizacion_Matriz, 0);
+	xTaskNotifyGive(Handle_Tarea_Actualizacion_Matriz);
+	xTaskCreatePinnedToCore(Tarea_Proceso, "Calculo", 4096, NULL, 5, &Handle_Tarea_Calculo, 0);
+	
+	  // 4. Configurar MCPWM (Lectura RPM) en PIN 15
     mcpwm_cap_timer_handle_t Handle_CaptureTimer = NULL;
     mcpwm_capture_timer_config_t Configuracion_CaptureTimer = {
         .clk_src = MCPWM_CAPTURE_CLK_SRC_DEFAULT, .group_id = 0
@@ -133,12 +526,15 @@ void app_main(void)
     ESP_ERROR_CHECK(mcpwm_new_capture_channel(Handle_CaptureTimer, &Configuracion_CaptureChannel, &Handler_CaptureChannel));
 
     mcpwm_capture_event_callbacks_t Configuracion_Capture_Callback = { .on_cap = Capture_Callback_Function };
-    ESP_ERROR_CHECK(mcpwm_capture_channel_register_event_callbacks(Handler_CaptureChannel, &Configuracion_Capture_Callback, Handle_Tarea));
+    ESP_ERROR_CHECK(mcpwm_capture_channel_register_event_callbacks(Handler_CaptureChannel, &Configuracion_Capture_Callback, NULL));
 
     ESP_ERROR_CHECK(mcpwm_capture_channel_enable(Handler_CaptureChannel));
     ESP_ERROR_CHECK(mcpwm_capture_timer_enable(Handle_CaptureTimer));
     ESP_ERROR_CHECK(mcpwm_capture_timer_start(Handle_CaptureTimer));
-    vTaskDelete(NULL);
-    // No borramos app_main para que FreeRTOS no se queje, o usamos un loop infinito.
-    while(1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+
+	
+	gptimer_enable(gptimer_grado);
+	gptimer_start(gptimer_grado);
+	
+ 
 }
