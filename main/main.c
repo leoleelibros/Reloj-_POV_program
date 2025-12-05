@@ -16,7 +16,13 @@
 #include "driver/gpio.h"
 #include "driver/mcpwm_prelude.h"
 #include "esp_intr_alloc.h"
+#include "portmacro.h"
+#include "http_parser.h"
+#include "esp_vfs.h"
+#include "esp_spiffs.h"
+#include "esp_http_server.h"
 
+static const char *TAG = "Web Server";
 //velocidad provisional rps
 uint64_t Vel = 13;
 uint64_t alarm_count_us;
@@ -59,14 +65,19 @@ volatile float g_freq_average = 0.0;
 //handlers tasks
 TaskHandle_t Handle_Tarea_Actualizacion_Matriz = NULL;
 TaskHandle_t Handle_Tarea_Calculo = NULL;
+TaskHandle_t Handle_Tarea_AumHora = NULL;
 gptimer_handle_t gptimer_grado = NULL;
+gptimer_handle_t gptimer_AumentoHora = NULL;
+
+
 
 //matriz principal
 uint16_t M[180][7];
 uint16_t M1[180][7];
 //Hora
-uint8_t Time = 25;
-uint8_t TimeMin = 89;
+uint8_t Time = 20;
+uint8_t TimeMin = 49;
+uint8_t Segs = 0;
 uint8_t Temp = 30;
 uint8_t Mes = 10;
 uint8_t Dia = 23;
@@ -86,38 +97,27 @@ uint16_t Pun[10][7]={
 };
 uint16_t C[10][7]={
 	{0,0,0,0,0,0,0}, 
-	{0,1,1,0,0,0,0},
-	{1,0,0,1,0,0,0},
-	{0,1,1,0,0,0,0},
-	{0,0,0,0,0,0,0},
+	{1,1,0,0,0,1,1},
 	{1,1,0,0,0,1,1},
 	{1,1,0,0,0,1,1},
 	{1,1,0,0,0,1,1},
 	{0,1,1,1,1,1,0},
+	{0,0,0,0,0,0,0},
+	{1,0,1,0,0,0,0},
+	{0,1,0,0,0,0,0},
 	{0,0,0,0,0,0,0}
 };
-uint16_t Grad[10][7]={
-	{0,0,0,0,0,0,0}, 
-	{0,1,1,0,0,0,0},
-	{1,0,0,1,0,0,0},
-	{1,0,0,1,0,0,0},
-	{0,1,1,0,0,0,0},
-	{0,0,0,0,0,0,0},
-	{0,0,0,0,0,0,0},
-	{0,0,0,0,0,0,0},
-	{0,0,0,0,0,0,0},
-	{0,0,0,0,0,0,0}
-};
+
 uint16_t Diag[10][7]={
 	{0,0,0,0,0,0,0}, 
-	{1,1,0,0,0,0,0},
-	{0,1,1,0,0,0,0},
-	{0,0,1,1,0,0,0},
-	{0,0,0,1,1,0,0},
-	{0,0,0,0,1,1,0},
 	{0,0,0,0,0,1,1},
-	{0,0,0,0,0,0,0},
-	{0,0,0,0,0,0,0},
+	{0,0,0,0,1,1,1},
+	{0,0,0,1,1,1,0},
+	{0,0,1,1,1,0,0},
+	{0,1,1,1,0,0,0},
+	{1,1,1,0,0,0,0},
+	{1,1,0,0,0,0,0},
+	{1,0,0,0,0,0,0},
 	{0,0,0,0,0,0,0}
 };
 uint16_t N0[10][7]={
@@ -247,11 +247,7 @@ static bool Capture_Callback_Function(mcpwm_cap_channel_handle_t cap_chan, const
     CapturaActual = current_capture;
     CapturaAnterior = CapturaActual;
     TicksDiferencia = diff; 
-    if (x>=180) {
-		x=0;
-	}
-	//i=x;
-	//x++;
+    
     vTaskNotifyGiveFromISR(Handle_Tarea_Calculo, &xHigherPriorityTaskWoken);
 
     return xHigherPriorityTaskWoken == pdTRUE;
@@ -291,7 +287,7 @@ static void Tarea_Proceso(void *parameter){
         // 3. ACTUALIZAR TIEMPO POR GRADO (Mover la lógica del temporizador aquí)
         if (g_freq_average > 0.1) {
             // Calcular el nuevo tiempo en microsegundos (ticks)
-            alarm_count_us = (uint64_t)(1000000.0 / ((g_freq -0.6)* 180.0));
+            alarm_count_us = (uint64_t)(1000000.0 / ((g_freq -0.65)* 180.0));
             // Aplicar un límite inferior para evitar tiempos irrazonablemente cortos.
             if (alarm_count_us < 300) { // Límite inferior de 100 us (10kHz)
                 alarm_count_us = 300;
@@ -305,6 +301,29 @@ static void Tarea_Proceso(void *parameter){
             .flags.auto_reload_on_alarm = true
         };
         gptimer_set_alarm_action(gptimer_grado, &CambioGrado);
+    }
+}
+static void Tarea_AumHora(void *parameter){
+    while (true) {
+        BaseType_t notificacion_recibida = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        
+        if (notificacion_recibida == pdTRUE) {
+            Segs++;
+            if (Segs>=60) {
+				Segs=0;
+				TimeMin++;
+				}
+				if(TimeMin>=60){
+					TimeMin=0;
+					Time++;
+					}
+					if(Time>=24){
+						Time=0;
+						Dia++;
+					}
+			xTaskNotifyGive(Handle_Tarea_Actualizacion_Matriz);
+		
+            }
     }
 }
 static bool IRAM_ATTR CambioGradoCallback(gptimer_handle_t CambioGrado, const gptimer_alarm_event_data_t *edata, void *user_data){
@@ -330,6 +349,11 @@ static bool IRAM_ATTR CambioGradoCallback(gptimer_handle_t CambioGrado, const gp
         if (i >= 180) { 
             i=0;
         }
+	return (high_task_awoken == pdTRUE); 						
+}
+static bool IRAM_ATTR CambioHoraCallback(gptimer_handle_t CambioGrado, const gptimer_alarm_event_data_t *edata, void *user_data){
+	BaseType_t high_task_awoken = pdFALSE;
+	vTaskNotifyGiveFromISR(Handle_Tarea_AumHora, &high_task_awoken);
 	return (high_task_awoken == pdTRUE); 						
 }
 static void Tarea_Actualizar_Matriz(void *parameter){
@@ -456,7 +480,7 @@ static void Tarea_Actualizar_Matriz(void *parameter){
                     M1[y+70][j]=N3[y][j];
                     break;
                     case 4:
-					M[y+1600][j]=N4[y][j];
+					M[y+160][j]=N4[y][j];
                     M1[y+70][j]=N4[y][j];
                     break;
                     case 5:
@@ -523,93 +547,93 @@ static void Tarea_Actualizar_Matriz(void *parameter){
                     break;
                     }
                     //para representar la temperatura
-                    M[y+135][j]=C[y][j];
-                    M1[y+45][j]=C[y][j];
                     
                     switch (TempDec) {
 					case 0:
-					M[y+125][j]=N0[y][j];
-                    M1[y+35][j]=N0[y][j];
+					M[y+130][j]=N0[y][j];
+                    M1[y+40][j]=N0[y][j];
                     break;
                     case 1:
-					M[y+125][j]=N1[y][j];
-                    M1[y+35][j]=N1[y][j];
+					M[y+130][j]=N1[y][j];
+                    M1[y+40][j]=N1[y][j];
                     break;
                     case 2:
-					M[y+125][j]=N2[y][j];
-                    M1[y+35][j]=N2[y][j];
+					M[y+130][j]=N2[y][j];
+                    M1[y+40][j]=N2[y][j];
                     break;
                     case 3:
-					M[y+125][j]=N3[y][j];
-                    M1[y+35][j]=N3[y][j];
+					M[y+130][j]=N3[y][j];
+                    M1[y+40][j]=N3[y][j];
                     break;
                     case 4:
-					M[y+125][j]=N4[y][j];
-                    M1[y+35][j]=N4[y][j];
+					M[y+130][j]=N4[y][j];
+                    M1[y+40][j]=N4[y][j];
                     break;
                     case 5:
-					M[y+125][j]=N5[y][j];
-                    M1[y+35][j]=N5[y][j];
+					M[y+130][j]=N5[y][j];
+                    M1[y+40][j]=N5[y][j];
                     break;
                     case 6:
-					M[y+125][j]=N6[y][j];
-                    M1[y+35][j]=N6[y][j];
+					M[y+130][j]=N6[y][j];
+                    M1[y+40][j]=N6[y][j];
                     break;
                     case 7:
-					M[y+125][j]=N7[y][j];
-                    M1[y+35][j]=N7[y][j];
+					M[y+130][j]=N7[y][j];
+                    M1[y+40][j]=N7[y][j];
                     break;
                     case 8:
-					M[y+125][j]=N8[y][j];
-                    M1[y+35][j]=N8[y][j];
+					M[y+130][j]=N8[y][j];
+                    M1[y+40][j]=N8[y][j];
                     break;
                     case 9:
-					M[y+125][j]=N9[y][j];
-                    M1[y+35][j]=N9[y][j];
+					M[y+130][j]=N9[y][j];
+                    M1[y+40][j]=N9[y][j];
                     break;
                     }
                     switch (TempRes) {
 					case 0:
-					M[y+115][j]=N0[y][j];
-                    M1[y+25][j]=N0[y][j];
+					M[y+120][j]=N0[y][j];
+                    M1[y+30][j]=N0[y][j];
                     break;
                     case 1:
-					M[y+115][j]=N1[y][j];
-                    M1[y+25][j]=N1[y][j];
+					M[y+120][j]=N1[y][j];
+                    M1[y+30][j]=N1[y][j];
                     break;
                     case 2:
-					M[y+115][j]=N2[y][j];
-                    M1[y+25][j]=N2[y][j];
+					M[y+120][j]=N2[y][j];
+                    M1[y+30][j]=N2[y][j];
                     break;
                     case 3:
-					M[y+115][j]=N3[y][j];
-                    M1[y+25][j]=N3[y][j];
+					M[y+120][j]=N3[y][j];
+                    M1[y+30][j]=N3[y][j];
                     break;
                     case 4:
-					M[y+115][j]=N4[y][j];
-                    M1[y+25][j]=N4[y][j];
+					M[y+120][j]=N4[y][j];
+                    M1[y+30][j]=N4[y][j];
                     break;
                     case 5:
-					M[y+115][j]=N5[y][j];
-                    M1[y+25][j]=N5[y][j];
+					M[y+120][j]=N5[y][j];
+                    M1[y+30][j]=N5[y][j];
                     break;
                     case 6:
-					M[y+115][j]=N6[y][j];
-                    M1[y+25][j]=N6[y][j];
+					M[y+120][j]=N6[y][j];
+                    M1[y+30][j]=N6[y][j];
                     break;
                     case 7:
-					M[y+115][j]=N7[y][j];
-                    M1[y+25][j]=N7[y][j];
+					M[y+120][j]=N7[y][j];
+                    M1[y+30][j]=N7[y][j];
                     break;
                     case 8:
-					M[y+115][j]=N8[y][j];
-                    M1[y+25][j]=N8[y][j];
+					M[y+120][j]=N8[y][j];
+                    M1[y+30][j]=N8[y][j];
                     break;
                     case 9:
-					M[y+115][j]=N9[y][j];
-                    M1[y+25][j]=N9[y][j];
+					M[y+120][j]=N9[y][j];
+                    M1[y+30][j]=N9[y][j];
                     break;
                     }
+                    M[y+110][j]=C[y][j];
+                    M1[y+20][j]=C[y][j];
                     //para la fecha
                     switch (DiaDec) {
 					case 0:
@@ -843,8 +867,7 @@ static void Tarea_Actualizar_Matriz(void *parameter){
             }
         }
       
-        // Si quieres que el tiempo avance, hazlo aquí (después de la copia)
-        // Time = (Time + 1) % 4; // Por ejemplo, para 0, 1, 2, 3
+
     }
 }
 void app_main(void)
@@ -879,10 +902,25 @@ void app_main(void)
 		.on_alarm = CambioGradoCallback,
 	};
 	gptimer_register_event_callbacks(gptimer_grado, &EventCambioGrado, NULL);
+	
+	//timer de aumento de hora
+	//gptimer_handle_t gptimer_AumentoHora = NULL;
+	gptimer_new_timer(&Timer_Config, &gptimer_AumentoHora);
+	gptimer_alarm_config_t CambioHora = {
+		.alarm_count = 50000,  //micro segundos
+		.reload_count = 0,
+		.flags.auto_reload_on_alarm = true
+	};
+	gptimer_set_alarm_action(gptimer_AumentoHora, &CambioHora);
+	gptimer_event_callbacks_t EventCambioHora = {
+		.on_alarm = CambioHoraCallback,
+	};
+	gptimer_register_event_callbacks(gptimer_AumentoHora, &EventCambioHora, NULL);
 	//tareas
 	xTaskCreatePinnedToCore(Tarea_Actualizar_Matriz, "ActualizarMatriz", 2048, NULL, 4, &Handle_Tarea_Actualizacion_Matriz, 0);
 	xTaskNotifyGive(Handle_Tarea_Actualizacion_Matriz);
 	xTaskCreatePinnedToCore(Tarea_Proceso, "Calculo", 4096, NULL, 5, &Handle_Tarea_Calculo, 0);
+	xTaskCreatePinnedToCore(Tarea_AumHora, "AumHora", 4096, NULL, 5, &Handle_Tarea_AumHora, 1);
 	
 	  // 4. Configurar MCPWM (Lectura RPM) en PIN 15
     mcpwm_cap_timer_handle_t Handle_CaptureTimer = NULL;
@@ -911,6 +949,8 @@ void app_main(void)
 	
 	gptimer_enable(gptimer_grado);
 	gptimer_start(gptimer_grado);
+	gptimer_enable(gptimer_AumentoHora);
+	gptimer_start(gptimer_AumentoHora);
 	
  
 }

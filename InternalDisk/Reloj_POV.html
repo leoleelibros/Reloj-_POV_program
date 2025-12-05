@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Control POV - Peraza & Marfil</title>
+    <link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
+    
+    <style>
+        :root {
+            --bg-color: #050505;
+            --card-color: #1a1a1a;
+            --text-color: #ccc;
+            --accent-blue: #2f11db;
+            --led-core: #ffebee;
+            --led-red: #ff0000;
+            --base-yellow: #fdd835; /* Amarillo más intenso tipo PLA */
+            --arm-blue: #1565c0;
+        }
+
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+            box-sizing: border-box;
+            overflow: hidden;
+        }
+
+        h1 { margin: 0; color: #fff; font-weight: 300; letter-spacing: 2px; text-transform: uppercase; }
+        h3 { margin-top: 5px; margin-bottom: 25px; font-size: 0.8rem; color: #666; letter-spacing: 1px; }
+
+        /* --- ESCENARIO --- */
+        .pov-container {
+            position: relative;
+            width: 380px;
+            height: 380px;
+            margin-bottom: 20px;
+            /* Fondo oscuro circular para delimitar el área de giro visual */
+            background: radial-gradient(circle, #111 30%, #000 70%); 
+            border-radius: 50%; 
+            box-shadow: 0 0 40px rgba(0,0,0,0.9);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow: visible; /* Permitir que la base rectangular se vea bien */
+        }
+
+        /* 1. BASE RECTANGULAR (Fondo estático) */
+        .base-rect {
+            position: absolute;
+            width: 90px;
+            height: 180px;
+            background-color: var(--base-yellow);
+            border-radius: 12px;
+            z-index: 1; /* Al fondo */
+            box-shadow: inset 0 0 15px rgba(0,0,0,0.3), 0 10px 20px rgba(0,0,0,0.5);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        /* Decoración: Agujeros de tornillos simulados */
+        .base-rect::before, .base-rect::after {
+            content: '';
+            position: absolute;
+            width: 8px; height: 8px;
+            background-color: #bfa025; /* Amarillo oscuro */
+            border-radius: 50%;
+            box-shadow: inset 1px 1px 2px rgba(0,0,0,0.5);
+        }
+        .base-rect::before { top: 15px; }
+        .base-rect::after { bottom: 15px; }
+
+        /* 2. CAPA DE HARDWARE (Brazo giratorio) */
+        .hardware-layer {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 5; /* Encima de la base */
+            animation: spin-hard 0.15s linear infinite; /* Velocidad realista */
+            opacity: 0.9; /* Transparencia para ver el efecto POV mejor */
+        }
+
+        .arm {
+            position: absolute;
+            width: 290px;
+            height: 28px;
+            background: var(--arm-blue);
+            border-radius: 4px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0 6px;
+            box-shadow: 0 0 10px rgba(21, 101, 192, 0.5);
+        }
+
+        .led-strip { display: flex; gap: 5px; }
+
+        .led-dot {
+            width: 7px;
+            height: 7px;
+            background-color: #400; /* LED apagado/tenue */
+            border-radius: 50%;
+            border: 1px solid #200;
+        }
+
+        .esp-box {
+            position: absolute;
+            left: 50%; top: 50%;
+            transform: translate(-50%, -50%);
+            width: 45px; height: 65px;
+            background: #222;
+            border: 1px solid #444;
+            display: flex; 
+            justify-content: center; align-items: center;
+            font-size: 8px; color: #555;
+        }
+
+        /* 3. CAPA DE EFECTO POV (Texto generado) */
+        .pov-display-layer {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            z-index: 20; /* Encima de todo */
+            pointer-events: none;
+            
+            /* Animación de rotación lenta (Drift) controlada por botones */
+            animation: drift 10s linear infinite;
+            animation-play-state: paused; 
+        }
+
+        .char {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            font-family: 'VT323', monospace;
+            font-size: 55px; /* Tamaño ajustado a los 7 LEDs */
+            font-weight: 400;
+            color: var(--led-core);
+            /* Efecto Neón / LED saturado */
+            text-shadow: 
+                0 0 5px var(--led-red),
+                0 0 15px var(--led-red),
+                0 0 30px var(--led-red);
+            
+            transform-origin: 0 0; 
+            line-height: 0;
+            user-select: none;
+        }
+
+        @keyframes spin-hard { 100% { transform: rotate(360deg); } }
+        @keyframes drift { 100% { transform: rotate(360deg); } }
+
+
+        /* --- CONTROLES --- */
+        .controls {
+            background-color: var(--card-color);
+            padding: 20px;
+            border-radius: 12px;
+            width: 100%;
+            max-width: 400px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            border: 1px solid #333;
+            z-index: 30;
+        }
+
+        .btn {
+            border: none;
+            padding: 12px;
+            border-radius: 6px;
+            font-weight: bold;
+            cursor: pointer;
+            color: white;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            transition: 0.2s;
+        }
+        .btn:active { transform: scale(0.98); }
+
+        .btn-time {
+            background: linear-gradient(135deg, #0d47a1, #1976d2);
+            box-shadow: 0 4px 10px rgba(13, 71, 161, 0.3);
+        }
+
+        .direction-group {
+            display: flex;
+            gap: 8px;
+            background: #222;
+            padding: 8px;
+            border-radius: 8px;
+        }
+
+        .btn-dir {
+            flex: 1;
+            background: transparent;
+            color: #888;
+            font-size: 0.9rem;
+            border-radius: 4px;
+        }
+        .btn-dir:hover { color: #fff; background: #333; }
+
+        /* Botones Activos */
+        .btn-dir.active-ccw { background: #c62828; color: #fff; box-shadow: 0 0 8px #c62828; }
+        .btn-dir.active-static { background: #fbc02d; color: #111; box-shadow: 0 0 8px #fbc02d; }
+        .btn-dir.active-cw { background: #2e7d32; color: #fff; box-shadow: 0 0 8px #2e7d32; }
+
+        .log { font-family: monospace; font-size: 0.75rem; color: #555; text-align: center; }
+
+    </style>
+</head>
+<body>
+
+    <h1>Relo POV</h1>
+    <h3>Peraza & Marfil | Proyecto Final</h3>
+
+    <div class="pov-container">
+        <div class="base-rect"></div>
+
+        <div class="pov-display-layer" id="povLayer"></div>
+
+        <div class="hardware-layer">
+            <div class="arm">
+                <div class="led-strip">
+                    <div class="led-dot"></div><div class="led-dot"></div><div class="led-dot"></div>
+                    <div class="led-dot"></div><div class="led-dot"></div><div class="led-dot"></div><div class="led-dot"></div>
+                </div>
+                
+                <div class="esp-box">ESP32</div>
+
+                <div class="led-strip">
+                    <div class="led-dot"></div><div class="led-dot"></div><div class="led-dot"></div>
+                    <div class="led-dot"></div><div class="led-dot"></div><div class="led-dot"></div><div class="led-dot"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="controls">
+        <button class="btn btn-time" onclick="syncTime()">Sincronizar Hora</button>
+        
+        <div class="direction-group">
+            <button class="btn btn-dir" id="btn-ccw" onclick="setMotor(-0.65, 'ccw')">CCW</button>
+            <button class="btn btn-dir active-static" id="btn-static" onclick="setMotor(-0.5, 'static')">STATIC</button>
+            <button class="btn btn-dir" id="btn-cw" onclick="setMotor(0.5, 'cw')">CW</button>
+        </div>
+        <div class="log" id="statusLog">Sistema Iniciado. Esperando...</div>
+    </div>
+
+    <script>
+        const povLayer = document.getElementById('povLayer');
+        const statusLog = document.getElementById('statusLog');
+
+        // Configuración visual
+        // Radio donde se dibujan las letras (ajustado para que calcen con los LEDs)
+        const TEXT_RADIUS = 110; 
+        
+        function updateDisplay() {
+            const now = new Date();
+            const h = now.getHours().toString().padStart(2, '0');
+            const m = now.getMinutes().toString().padStart(2, '0');
+            const d = now.getDate().toString().padStart(2, '0');
+            const mo = (now.getMonth() + 1).toString().padStart(2, '0');
+            const y = now.getFullYear().toString().slice(-2);
+
+            const timeStr = `${h}:${m}`;
+            const dateStr = `${d}/${mo}/${y}`;
+            const tempStr = "25°C";
+
+            povLayer.innerHTML = '';
+
+            // Renderizamos los datos. 
+            // CORRECCION: Ajustar ángulos para que se vean bien
+            // Hora (Arriba)
+            renderArcText(timeStr, -90, 14); 
+
+            // Fecha (Abajo Derecha - aprox las 4/5)
+            renderArcText(dateStr, 30, 10); 
+
+            // Temp (Abajo Izquierda - aprox las 7/8)
+            renderArcText(tempStr, 150, 12); 
+        }
+
+        // --- FUNCIÓN DE CURVATURA CORREGIDA ---
+        function renderArcText(text, centerAngle, spacing) {
+            const startAngle = centerAngle - ((text.length - 1) * spacing) / 2;
+            
+            for (let i = 0; i < text.length; i++) {
+                const char = text[i];
+                const angle = startAngle + (i * spacing);
+                
+                const span = document.createElement('span');
+                span.innerText = char;
+                span.className = 'char';
+                
+                // --- LÓGICA DE ROTACIÓN VERTICAL ---
+                // 1. rotate(angle): Gira el eje hacia la posición del reloj.
+                // 2. translateY(-radius): Empuja la letra hacia afuera.
+                // 3. NO agregamos el rotate(90deg) final. 
+                //    Esto hace que la letra quede "de pie" sobre el radio (vertical al centro).
+                //    El "top" de la letra apunta hacia afuera.
+                
+                span.style.transform = `rotate(${angle}deg) translateY(-${TEXT_RADIUS}px)`;
+                
+                povLayer.appendChild(span);
+            }
+        }
+
+        setInterval(updateDisplay, 1000);
+        updateDisplay(); 
+
+        // --- LÓGICA DE CONTROL ---
+        function log(msg) {
+            statusLog.innerText = `> ${msg}`;
+            console.log(msg);
+        }
+
+        function syncTime() {
+            const now = new Date();
+            const params = new URLSearchParams({
+                h: now.getHours(),
+                m: now.getMinutes(),
+                s: now.getSeconds(),
+                D: now.getDate(),
+                M: now.getMonth() + 1,
+                Y: now.getFullYear()
+            });
+
+            log("Enviando hora al ESP32...");
+            
+            fetch(`/set-time?${params.toString()}`)
+                .then(r => r.ok ? log("Hora sincronizada OK.") : log("ESP recibido, pero con error."))
+                .catch(e => log("Error: No hay conexión con ESP."));
+        }
+
+        function setMotor(val, mode) {
+            // Visual
+            document.querySelectorAll('.btn-dir').forEach(b => b.classList.remove('active-ccw', 'active-static', 'active-cw'));
+            document.getElementById(`btn-${mode}`).classList.add(`active-${mode}`);
+
+            if(mode === 'static') {
+                povLayer.style.animationPlayState = 'paused';
+                log(`Motor ESTÁTICO (-0.5)`);
+            } else {
+                povLayer.style.animationPlayState = 'running';
+                // CCW = El texto gira "normal" visualmente
+                // CW = El texto gira "reversa" visualmente
+                povLayer.style.animationDirection = (mode === 'cw') ? 'normal' : 'reverse';
+                log(`Motor ${mode.toUpperCase()} (${val})`);
+            }
+
+            // Hardware
+            fetch(`/set-motor?val=${val}`).catch(e => console.log("Simulación local"));
+        }
+    </script>
+</body>
+</html>
