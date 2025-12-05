@@ -22,6 +22,7 @@ uint64_t Vel = 13;
 uint64_t alarm_count_us;
 //contador
 uint8_t i=0;
+uint8_t x=0;
 //leds
 //18 NO
 #define LED1 GPIO_NUM_13
@@ -49,6 +50,7 @@ uint32_t CapturaAnterior = 0;
 uint32_t TicksDiferencia = 0;
 static float g_rpm = 0.0;
 static float g_freq = 0.0;
+static float g_freq_last = 0.0;
 float freq_history[FILTER_WINDOW_SIZE] = {0}; // Buffer
 int history_idx = 0;                         // Puntero del buffer
 float freq_sum = 0.0;                         // Suma acumulada
@@ -63,8 +65,12 @@ gptimer_handle_t gptimer_grado = NULL;
 uint16_t M[180][7];
 uint16_t M1[180][7];
 //Hora
-uint8_t Time = 14;
-uint8_t TimeMin = 54;
+uint8_t Time = 25;
+uint8_t TimeMin = 89;
+uint8_t Temp = 30;
+uint8_t Mes = 10;
+uint8_t Dia = 23;
+uint8_t year = 25;
 //Matrices para los numeros
 uint16_t Pun[10][7]={
 	{0,0,0,0,0,0,0}, 
@@ -74,6 +80,42 @@ uint16_t Pun[10][7]={
 	{0,1,0,0,0,1,0},
 	{1,1,1,0,1,1,1},
 	{0,1,0,0,0,1,0},
+	{0,0,0,0,0,0,0},
+	{0,0,0,0,0,0,0},
+	{0,0,0,0,0,0,0}
+};
+uint16_t C[10][7]={
+	{0,0,0,0,0,0,0}, 
+	{0,1,1,0,0,0,0},
+	{1,0,0,1,0,0,0},
+	{0,1,1,0,0,0,0},
+	{0,0,0,0,0,0,0},
+	{1,1,0,0,0,1,1},
+	{1,1,0,0,0,1,1},
+	{1,1,0,0,0,1,1},
+	{0,1,1,1,1,1,0},
+	{0,0,0,0,0,0,0}
+};
+uint16_t Grad[10][7]={
+	{0,0,0,0,0,0,0}, 
+	{0,1,1,0,0,0,0},
+	{1,0,0,1,0,0,0},
+	{1,0,0,1,0,0,0},
+	{0,1,1,0,0,0,0},
+	{0,0,0,0,0,0,0},
+	{0,0,0,0,0,0,0},
+	{0,0,0,0,0,0,0},
+	{0,0,0,0,0,0,0},
+	{0,0,0,0,0,0,0}
+};
+uint16_t Diag[10][7]={
+	{0,0,0,0,0,0,0}, 
+	{1,1,0,0,0,0,0},
+	{0,1,1,0,0,0,0},
+	{0,0,1,1,0,0,0},
+	{0,0,0,1,1,0,0},
+	{0,0,0,0,1,1,0},
+	{0,0,0,0,0,1,1},
 	{0,0,0,0,0,0,0},
 	{0,0,0,0,0,0,0},
 	{0,0,0,0,0,0,0}
@@ -93,25 +135,25 @@ uint16_t N0[10][7]={
 uint16_t N1[10][7]={
 	{0,0,0,0,0,0,0}, 
 	{0,0,0,0,0,0,0},
-	{0,0,0,0,0,0,1},
-	{0,0,0,0,0,0,1},
+	{1,0,0,0,0,0,0},
+	{1,0,0,0,0,0,0},
 	{1,1,1,1,1,1,1},
 	{1,1,1,1,1,1,1},
-	{0,1,1,0,0,0,1},
-	{0,0,1,0,0,0,1},
-	{0,0,0,0,0,0,0},
+	{1,0,0,0,1,1,0},
+	{1,0,0,0,1,0,0},
+	{1,0,0,0,0,0,0},
 	{0,0,0,0,0,0,0}
 };
 uint16_t N2[10][7]={
 	{0,0,0,0,0,0,0}, 
-	{0,1,0,0,0,0,1},
-	{1,1,1,0,0,0,1},
+	{0,0,0,0,1,1,0},
 	{1,0,0,1,0,0,1},
 	{1,0,0,1,0,0,1},
 	{1,0,0,1,0,0,1},
-	{1,0,0,1,1,0,1},
-	{1,1,0,0,1,1,1},
-	{0,1,0,0,0,1,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,1,0,0,0,1},
+	{1,1,0,0,0,0,1},
 	{0,0,0,0,0,0,0}
 };
 uint16_t N3[10][7]={
@@ -124,36 +166,36 @@ uint16_t N3[10][7]={
 	{1,0,0,1,0,0,1},
 	{1,1,0,0,0,1,1},
 	{0,1,0,0,0,1,0},
-	{0,0,0,0,0,0,0}
+
 };
 uint16_t N4[10][7]={
 	{0,0,0,0,0,0,0}, 
-	{0,0,1,1,1,1,1},
-	{0,0,1,1,1,1,1},
-	{0,0,1,1,0,0,0},
-	{0,0,1,1,0,0,0},
-	{0,0,1,1,0,0,0},
-	{0,0,1,1,0,0,0},
-	{1,1,1,1,0,1,1},
 	{1,1,1,1,1,1,1},
+	{1,1,1,1,1,1,1},
+	{0,0,1,1,0,0,0},
+	{0,0,1,1,0,0,0},
+	{0,0,1,1,0,0,0},
+	{0,0,1,1,0,0,0},
+	{0,0,1,1,0,1,1},
+	{0,0,0,1,1,1,1},
 	{0,0,0,0,0,0,0}
 };
 uint16_t N5[10][7]={
 	{0,0,0,0,0,0,0}, 
-	{1,1,0,0,1,1,0},
-	{1,1,0,1,1,1,1},
-	{1,1,0,1,0,0,1},
-	{1,1,0,1,0,0,1},
-	{1,1,0,1,0,0,1},
-	{1,1,0,1,0,0,1},
-	{1,1,0,1,0,0,1},
-	{1,1,1,1,0,1,1},
+	{0,1,1,0,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,1,1,1},
 	{0,0,0,0,0,0,0}
 };
 uint16_t N6[10][7]={
 	{0,0,0,0,0,0,0}, 
-	{0,1,0,0,1,1,0},
-	{1,1,0,1,0,0,1},
+	{0,1,1,0,0,0,0},
+	{1,0,0,1,0,0,1},
 	{1,0,0,1,0,0,1},
 	{1,0,0,1,0,0,1},
 	{1,0,0,1,0,0,1},
@@ -164,13 +206,13 @@ uint16_t N6[10][7]={
 };
 uint16_t N7[10][7]={
 	{0,0,0,0,0,0,0}, 
-	{1,1,0,0,0,0,0},
-	{1,1,1,0,0,0,0},
-	{1,0,1,1,0,0,0},
-	{1,0,0,1,1,0,0},
-	{1,0,0,0,1,1,0},
+	{0,0,0,0,0,1,1},
+	{0,0,0,0,1,1,1},
+	{0,0,0,1,1,1,1},
+	{0,0,1,1,0,1,1},
+	{0,1,1,0,0,1,1},
+	{1,1,0,0,0,1,1},
 	{1,0,0,0,0,1,1},
-	{1,0,0,0,0,0,1},
 	{0,0,0,0,0,0,0},
 	{0,0,0,0,0,0,0}
 };
@@ -188,14 +230,14 @@ uint16_t N8[10][7]={
 };
 uint16_t N9[10][7]={
 	{0,0,0,0,0,0,0}, 
-	{0,1,1,1,1,0,0},
-	{1,1,1,1,1,1,1},
+	{0,1,1,1,1,1,0},
+	{1,1,0,1,0,0,1},
 	{1,0,0,1,0,0,1},
 	{1,0,0,1,0,0,1},
 	{1,0,0,1,0,0,1},
 	{1,0,0,1,0,0,1},
 	{1,0,0,1,0,0,1},
-	{0,1,1,0,0,1,0},
+	{1,0,0,0,1,1,0},
 	{0,0,0,0,0,0,0}
 };
 static bool Capture_Callback_Function(mcpwm_cap_channel_handle_t cap_chan, const mcpwm_capture_event_data_t *edata, void *user_data){
@@ -205,7 +247,11 @@ static bool Capture_Callback_Function(mcpwm_cap_channel_handle_t cap_chan, const
     CapturaActual = current_capture;
     CapturaAnterior = CapturaActual;
     TicksDiferencia = diff; 
-    i=0;
+    if (x>=180) {
+		x=0;
+	}
+	//i=x;
+	//x++;
     vTaskNotifyGiveFromISR(Handle_Tarea_Calculo, &xHigherPriorityTaskWoken);
 
     return xHigherPriorityTaskWoken == pdTRUE;
@@ -223,6 +269,10 @@ static void Tarea_Proceso(void *parameter){
             freq_medido = (float)MCPWM_CLK_SRC_HZ / (float)TicksDiferencia;
             if(freq_medido < 40.0){
                 g_freq =freq_medido;
+                g_freq_last = g_freq;
+            }
+            else{
+                g_freq = g_freq_last;
             }
             g_rpm = g_freq * 60.0f;
         } else {
@@ -241,7 +291,7 @@ static void Tarea_Proceso(void *parameter){
         // 3. ACTUALIZAR TIEMPO POR GRADO (Mover la lógica del temporizador aquí)
         if (g_freq_average > 0.1) {
             // Calcular el nuevo tiempo en microsegundos (ticks)
-            alarm_count_us = (uint64_t)(1000000.0 / (g_freq_average * 180.0));
+            alarm_count_us = (uint64_t)(1000000.0 / ((g_freq -0.6)* 180.0));
             // Aplicar un límite inferior para evitar tiempos irrazonablemente cortos.
             if (alarm_count_us < 300) { // Límite inferior de 100 us (10kHz)
                 alarm_count_us = 300;
@@ -291,96 +341,365 @@ static void Tarea_Actualizar_Matriz(void *parameter){
         uint8_t HoraRes = Time%10;
         uint8_t Min = TimeMin/10;
         uint8_t MinRes = TimeMin%10;
+        uint8_t TempDec = Temp/10;
+        uint8_t TempRes = Temp%10;
+        uint8_t DiaDec = Dia/10;
+        uint8_t DiaRes = Dia%10;
+        uint8_t MesDec = Mes/10;
+        uint8_t MesRes = Mes%10;
+        uint8_t yearDec = year/10;
+        uint8_t yearRes = year%10;
         // Ejecutar el trabajo pesado: Copiar la matriz
         for (int y = 0; y<10; y++) {
             for (int j = 0; j<7; j++) {
                 switch (Hora) {
                     case 0:
-                    M[y+100][j]=N0[y][j];
-                    M1[y+10][j]=N0[y][j]; //para cuando los leds que llevan el sensor estan en 0 estos estan en 180(90) y viceversa
+                    M[y+10][j]=N0[y][j];
+                    M1[y+100][j]=N0[y][j]; //para cuando los leds que llevan el sensor estan en 0 estos estan en 180(90) y viceversa
                     break;
                     case 1:
-                    M[y+100][j]=N1[y][j];
-                    M1[y+10][j]=N1[y][j];
+                    M[y+10][j]=N1[y][j];
+                    M1[y+100][j]=N1[y][j];
                     break;
                     case 2:
-                    M[y+100][j]=N2[y][j];
-                    M1[y+10][j]=N2[y][j];
+                    M[y+10][j]=N2[y][j];
+                    M1[y+100][j]=N2[y][j];
                     break;
                     case 3:
-                    M[y+100][j]=N3[y][j];
-                    M1[y+10][j]=N3[y][j];
+                    M[y+10][j]=N3[y][j];
+                    M1[y+100][j]=N3[y][j];
                     break;
                     case 4:
-                    M[y+100][j]=N4[y][j];
-                    M1[y+10][j]=N4[y][j];
+                    M[y+10][j]=N4[y][j];
+                    M1[y+100][j]=N4[y][j];
                     break;
                     case 5:
-                    M[y+100][j]=N5[y][j];
-                    M1[y+10][j]=N5[y][j];
+                    M[y+10][j]=N5[y][j];
+                    M1[y+100][j]=N5[y][j];
                     break;
                     case 6:
-                    M[y+100][j]=N6[y][j];
-                    M1[y+10][j]=N6[y][j];
+                    M[y+10][j]=N6[y][j];
+                    M1[y+100][j]=N6[y][j];
                     break;
                     case 7:
-                    M[y+100][j]=N7[y][j];
-                    M1[y+10][j]=N7[y][j];
+                    M[y+10][j]=N7[y][j];
+                    M1[y+100][j]=N7[y][j];
                     break;
                     case 8:
-                    M[y+100][j]=N8[y][j];
-                    M1[y+10][j]=N8[y][j];
+                    M[y+10][j]=N8[y][j];
+                    M1[y+100][j]=N8[y][j];
                     break;
                     case 9:
-                    M[y+100][j]=N9[y][j];
-                    M1[y+10][j]=N9[y][j];
+                    M[y+10][j]=N9[y][j];
+                    M1[y+100][j]=N9[y][j];
                     break;
                 }
                 switch (HoraRes) {
                     case 0:
-                    M[y+90][j]=N0[y][j];
-                    M1[y][j]=N0[y][j]; //para cuando los leds que llevan el sensor estan en 0 estos estan en 180(90) y viceversa
+                    M[y][j]=N0[y][j];
+                    M1[y+90][j]=N0[y][j]; //para cuando los leds que llevan el sensor estan en 0 estos estan en 180(90) y viceversa
                     break;
                     case 1:
-                    M[y+90][j]=N1[y][j];
+                    M[y][j]=N1[y][j];
+                    M1[y+90][j]=N1[y][j];
+                    break;
+                    case 2:
+                    M[y][j]=N2[y][j];
+                    M1[y+90][j]=N2[y][j];
+                    break;
+                    case 3:
+                    M[y][j]=N3[y][j];
+                    M1[y+90][j]=N3[y][j];
+                    break;
+                    case 4:
+                    M[y][j]=N4[y][j];
+                    M1[y+90][j]=N4[y][j];
+                    break;
+                    case 5:
+                    M[y][j]=N5[y][j];
+                    M1[y+90][j]=N5[y][j];
+                    break;
+                    case 6:
+                    M[y][j]=N6[y][j];
+                    M1[y+90][j]=N6[y][j];
+                    break;
+                    case 7:
+                    M[y][j]=N7[y][j];
+                    M1[y+90][j]=N7[y][j];
+                    break;
+                    case 8:
+                    M[y][j]=N8[y][j];
+                    M1[y+90][j]=N8[y][j];
+                    break;
+                    case 9:
+                    M[y][j]=N9[y][j];
+                    M1[y+90][j]=N9[y][j];
+                    break;
+                }
+                M[y+170][j]=Pun[y][j];
+                M1[y+80][j]=Pun[y][j];
+                switch (Min) {
+					case 0:
+					M[y+160][j]=N0[y][j];
+                    M1[y+70][j]=N0[y][j];
+                    break;
+                    case 1:
+					M[y+160][j]=N1[y][j];
+                    M1[y+70][j]=N1[y][j];
+                    break;
+                    case 2:
+					M[y+160][j]=N2[y][j];
+                    M1[y+70][j]=N2[y][j];
+                    break;
+                    case 3:
+					M[y+160][j]=N3[y][j];
+                    M1[y+70][j]=N3[y][j];
+                    break;
+                    case 4:
+					M[y+1600][j]=N4[y][j];
+                    M1[y+70][j]=N4[y][j];
+                    break;
+                    case 5:
+					M[y+160][j]=N5[y][j];
+                    M1[y+70][j]=N5[y][j];
+                    break;
+                    case 6:
+					M[y+160][j]=N6[y][j];
+                    M1[y+70][j]=N6[y][j];
+                    break;
+                    case 7:
+					M[y+160][j]=N7[y][j];
+                    M1[y+70][j]=N7[y][j];
+                    break;
+                    case 8:
+					M[y+160][j]=N8[y][j];
+                    M1[y+70][j]=N8[y][j];
+                    break;
+                    case 9:
+					M[y+160][j]=N9[y][j];
+                    M1[y+70][j]=N9[y][j];
+                    break;
+				}
+				switch (MinRes) {
+					case 0:
+					M[y+150][j]=N0[y][j];
+                    M1[y+60][j]=N0[y][j];
+                    break;
+                    case 1:
+					M[y+150][j]=N1[y][j];
+                    M1[y+60][j]=N1[y][j];
+                    break;
+                    case 2:
+					M[y+150][j]=N2[y][j];
+                    M1[y+60][j]=N2[y][j];
+                    break;
+                    case 3:
+					M[y+150][j]=N3[y][j];
+                    M1[y+60][j]=N3[y][j];
+                    break;
+                    case 4:
+					M[y+150][j]=N4[y][j];
+                    M1[y+60][j]=N4[y][j];
+                    break;
+                    case 5:
+					M[y+150][j]=N5[y][j];
+                    M1[y+60][j]=N5[y][j];
+                    break;
+                    case 6:
+					M[y+150][j]=N6[y][j];
+                    M1[y+60][j]=N6[y][j];
+                    break;
+                    case 7:
+					M[y+150][j]=N7[y][j];
+                    M1[y+60][j]=N7[y][j];
+                    break;
+                    case 8:
+					M[y+150][j]=N8[y][j];
+                    M1[y+60][j]=N8[y][j];
+                    break;
+                    case 9:
+					M[y+150][j]=N9[y][j];
+                    M1[y+60][j]=N9[y][j];
+                    break;
+                    }
+                    //para representar la temperatura
+                    M[y+135][j]=C[y][j];
+                    M1[y+45][j]=C[y][j];
+                    
+                    switch (TempDec) {
+					case 0:
+					M[y+125][j]=N0[y][j];
+                    M1[y+35][j]=N0[y][j];
+                    break;
+                    case 1:
+					M[y+125][j]=N1[y][j];
+                    M1[y+35][j]=N1[y][j];
+                    break;
+                    case 2:
+					M[y+125][j]=N2[y][j];
+                    M1[y+35][j]=N2[y][j];
+                    break;
+                    case 3:
+					M[y+125][j]=N3[y][j];
+                    M1[y+35][j]=N3[y][j];
+                    break;
+                    case 4:
+					M[y+125][j]=N4[y][j];
+                    M1[y+35][j]=N4[y][j];
+                    break;
+                    case 5:
+					M[y+125][j]=N5[y][j];
+                    M1[y+35][j]=N5[y][j];
+                    break;
+                    case 6:
+					M[y+125][j]=N6[y][j];
+                    M1[y+35][j]=N6[y][j];
+                    break;
+                    case 7:
+					M[y+125][j]=N7[y][j];
+                    M1[y+35][j]=N7[y][j];
+                    break;
+                    case 8:
+					M[y+125][j]=N8[y][j];
+                    M1[y+35][j]=N8[y][j];
+                    break;
+                    case 9:
+					M[y+125][j]=N9[y][j];
+                    M1[y+35][j]=N9[y][j];
+                    break;
+                    }
+                    switch (TempRes) {
+					case 0:
+					M[y+115][j]=N0[y][j];
+                    M1[y+25][j]=N0[y][j];
+                    break;
+                    case 1:
+					M[y+115][j]=N1[y][j];
+                    M1[y+25][j]=N1[y][j];
+                    break;
+                    case 2:
+					M[y+115][j]=N2[y][j];
+                    M1[y+25][j]=N2[y][j];
+                    break;
+                    case 3:
+					M[y+115][j]=N3[y][j];
+                    M1[y+25][j]=N3[y][j];
+                    break;
+                    case 4:
+					M[y+115][j]=N4[y][j];
+                    M1[y+25][j]=N4[y][j];
+                    break;
+                    case 5:
+					M[y+115][j]=N5[y][j];
+                    M1[y+25][j]=N5[y][j];
+                    break;
+                    case 6:
+					M[y+115][j]=N6[y][j];
+                    M1[y+25][j]=N6[y][j];
+                    break;
+                    case 7:
+					M[y+115][j]=N7[y][j];
+                    M1[y+25][j]=N7[y][j];
+                    break;
+                    case 8:
+					M[y+115][j]=N8[y][j];
+                    M1[y+25][j]=N8[y][j];
+                    break;
+                    case 9:
+					M[y+115][j]=N9[y][j];
+                    M1[y+25][j]=N9[y][j];
+                    break;
+                    }
+                    //para la fecha
+                    switch (DiaDec) {
+					case 0:
+					M[y+100][j]=N0[y][j];
+                    M1[y+10][j]=N0[y][j];
+                    break;
+                    case 1:
+					M[y+100][j]=N1[y][j];
+                    M1[y+10][j]=N1[y][j];
+                    break;
+                    case 2:
+					M[y+100][j]=N2[y][j];
+                    M1[y+10][j]=N2[y][j];
+                    break;
+                    case 3:
+					M[y+100][j]=N3[y][j];
+                    M1[y+10][j]=N3[y][j];
+                    break;
+                    case 4:
+					M[y+100][j]=N4[y][j];
+                    M1[y+10][j]=N4[y][j];
+                    break;
+                    case 5:
+					M[y+100][j]=N5[y][j];
+                    M1[y+10][j]=N5[y][j];
+                    break;
+                    case 6:
+					M[y+100][j]=N6[y][j];
+                    M1[y+10][j]=N6[y][j];
+                    break;
+                    case 7:
+					M[y+100][j]=N7[y][j];
+                    M1[y+10][j]=N7[y][j];
+                    break;
+                    case 8:
+					M[y+100][j]=N8[y][j];
+                    M1[y+10][j]=N8[y][j];
+                    break;
+                    case 9:
+					M[y+100][j]=N9[y][j];
+                    M1[y+10][j]=N9[y][j];
+                    break;
+                    }                 
+                    switch (DiaRes) {
+					case 0:
+					M[y+90][j]=N0[y][j];
+                    M1[y][j]=N0[y][j];
+                    break;
+                    case 1:
+					M[y+90][j]=N1[y][j];
                     M1[y][j]=N1[y][j];
                     break;
                     case 2:
-                    M[y+90][j]=N2[y][j];
+					M[y+90][j]=N2[y][j];
                     M1[y][j]=N2[y][j];
                     break;
                     case 3:
-                    M[y+90][j]=N3[y][j];
+					M[y+90][j]=N3[y][j];
                     M1[y][j]=N3[y][j];
                     break;
                     case 4:
-                    M[y+90][j]=N4[y][j];
+					M[y+90][j]=N4[y][j];
                     M1[y][j]=N4[y][j];
                     break;
                     case 5:
-                    M[y+90][j]=N5[y][j];
+					M[y+90][j]=N5[y][j];
                     M1[y][j]=N5[y][j];
                     break;
                     case 6:
-                    M[y+90][j]=N6[y][j];
+					M[y+90][j]=N6[y][j];
                     M1[y][j]=N6[y][j];
                     break;
                     case 7:
-                    M[y+90][j]=N7[y][j];
+					M[y+90][j]=N7[y][j];
                     M1[y][j]=N7[y][j];
                     break;
                     case 8:
-                    M[y+90][j]=N8[y][j];
+					M[y+90][j]=N8[y][j];
                     M1[y][j]=N8[y][j];
                     break;
                     case 9:
-                    M[y+90][j]=N9[y][j];
+					M[y+90][j]=N9[y][j];
                     M1[y][j]=N9[y][j];
                     break;
-                }
-                M[y+80][j]=Pun[y][j];
-                M1[y+170][j]=Pun[y][j];
-                switch (Min) {
+                    }
+                    
+                    M[y+80][j]=Diag[y][j];
+                    M1[y+170][j]=Diag[y][j];
+                    
+                    switch (MesDec) {
 					case 0:
 					M[y+70][j]=N0[y][j];
                     M1[y+160][j]=N0[y][j];
@@ -389,40 +708,8 @@ static void Tarea_Actualizar_Matriz(void *parameter){
 					M[y+70][j]=N1[y][j];
                     M1[y+160][j]=N1[y][j];
                     break;
-                    case 2:
-					M[y+70][j]=N2[y][j];
-                    M1[y+160][j]=N2[y][j];
-                    break;
-                    case 3:
-					M[y+70][j]=N3[y][j];
-                    M1[y+160][j]=N3[y][j];
-                    break;
-                    case 4:
-					M[y+70][j]=N4[y][j];
-                    M1[y+160][j]=N4[y][j];
-                    break;
-                    case 5:
-					M[y+70][j]=N5[y][j];
-                    M1[y+160][j]=N5[y][j];
-                    break;
-                    case 6:
-					M[y+70][j]=N6[y][j];
-                    M1[y+160][j]=N6[y][j];
-                    break;
-                    case 7:
-					M[y+70][j]=N7[y][j];
-                    M1[y+160][j]=N7[y][j];
-                    break;
-                    case 8:
-					M[y+70][j]=N8[y][j];
-                    M1[y+160][j]=N8[y][j];
-                    break;
-                    case 9:
-					M[y+70][j]=N9[y][j];
-                    M1[y+160][j]=N9[y][j];
-                    break;
-				}
-				switch (MinRes) {
+                    }
+                    switch (MesRes) {
 					case 0:
 					M[y+60][j]=N0[y][j];
                     M1[y+150][j]=N0[y][j];
@@ -464,6 +751,95 @@ static void Tarea_Actualizar_Matriz(void *parameter){
                     M1[y+150][j]=N9[y][j];
                     break;
                     }
+                    M[y+50][j]=Diag[y][j];
+                    M1[y+140][j]=Diag[y][j];
+                    
+                    switch (yearDec) {
+					case 0:
+					M[y+40][j]=N0[y][j];
+                    M1[y+130][j]=N0[y][j];
+                    break;
+                    case 1:
+					M[y+40][j]=N1[y][j];
+                    M1[y+130][j]=N1[y][j];
+                    break;
+                    case 2:
+					M[y+40][j]=N2[y][j];
+                    M1[y+130][j]=N2[y][j];
+                    break;
+                    case 3:
+					M[y+40][j]=N3[y][j];
+                    M1[y+130][j]=N3[y][j];
+                    break;
+                    case 4:
+					M[y+40][j]=N4[y][j];
+                    M1[y+130][j]=N4[y][j];
+                    break;
+                    case 5:
+					M[y+40][j]=N5[y][j];
+                    M1[y+130][j]=N5[y][j];
+                    break;
+                    case 6:
+					M[y+40][j]=N6[y][j];
+                    M1[y+130][j]=N6[y][j];
+                    break;
+                    case 7:
+					M[y+40][j]=N7[y][j];
+                    M1[y+130][j]=N7[y][j];
+                    break;
+                    case 8:
+					M[y+40][j]=N8[y][j];
+                    M1[y+130][j]=N8[y][j];
+                    break;
+                    case 9:
+					M[y+40][j]=N9[y][j];
+                    M1[y+130][j]=N9[y][j];
+                    break;
+                    }
+                    switch (yearRes) {
+					case 0:
+					M[y+30][j]=N0[y][j];
+                    M1[y+120][j]=N0[y][j];
+                    break;
+                    case 1:
+					M[y+30][j]=N1[y][j];
+                    M1[y+120][j]=N1[y][j];
+                    break;
+                    case 2:
+					M[y+30][j]=N2[y][j];
+                    M1[y+120][j]=N2[y][j];
+                    break;
+                    case 3:
+					M[y+30][j]=N3[y][j];
+                    M1[y+120][j]=N3[y][j];
+                    break;
+                    case 4:
+					M[y+30][j]=N4[y][j];
+                    M1[y+120][j]=N4[y][j];
+                    break;
+                    case 5:
+					M[y+30][j]=N5[y][j];
+                    M1[y+120][j]=N5[y][j];
+                    break;
+                    case 6:
+					M[y+30][j]=N6[y][j];
+                    M1[y+120][j]=N6[y][j];
+                    break;
+                    case 7:
+					M[y+30][j]=N7[y][j];
+                    M1[y+120][j]=N7[y][j];
+                    break;
+                    case 8:
+					M[y+30][j]=N8[y][j];
+                    M1[y+120][j]=N8[y][j];
+                    break;
+                    case 9:
+					M[y+30][j]=N9[y][j];
+                    M1[y+120][j]=N9[y][j];
+                    break;
+                    }
+                    
+                    
             }
         }
       
