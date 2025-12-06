@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <stdbool.h>
 #include <unistd.h>
@@ -21,8 +22,15 @@
 #include "esp_vfs.h"
 #include "esp_spiffs.h"
 #include "esp_http_server.h"
+#include "driver/adc_types_legacy.h"
+#include "freertos/idf_additions.h"
+#include "hal/adc_types.h"
+#include "portmacro.h"
+#include <driver/adc.h>
 
 static const char *TAG = "Web Server";
+//ADC
+
 //velocidad provisional rps
 uint64_t Vel = 13;
 uint64_t alarm_count_us;
@@ -62,6 +70,7 @@ int history_idx = 0;                         // Puntero del buffer
 float freq_sum = 0.0;                         // Suma acumulada
 float freq_average = 0.0;
 volatile float g_freq_average = 0.0;
+static float dir = -.4; //direccion del motor
 //handlers tasks
 TaskHandle_t Handle_Tarea_Actualizacion_Matriz = NULL;
 TaskHandle_t Handle_Tarea_Calculo = NULL;
@@ -69,11 +78,25 @@ TaskHandle_t Handle_Tarea_AumHora = NULL;
 gptimer_handle_t gptimer_grado = NULL;
 gptimer_handle_t gptimer_AumentoHora = NULL;
 
+//manejadores de API
+static esp_err_t set_date_handler(httpd_req_t *req);
+static esp_err_t set_dir_handler(httpd_req_t *req);
+static esp_err_t set_temp_handler(httpd_req_t *req);
 
+//manejadoree de archivios SPIFFS
+static esp_err_t root_get_handler(httpd_req_t *req);
+static esp_err_t mainhtml_get_handler(httpd_req_t *req);
+static esp_err_t favicon_get_handler(httpd_req_t *req);
+
+static esp_err_t EnviarArchivo(httpd_req_t *req, const char *path);
+static const char *get_mime_type(const char *path);
+esp_err_t FileSystemInit(void);
+static void WiFi_STA_Initialization(void);
+static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data);
 
 //matriz principal
-uint16_t M[180][7];
-uint16_t M1[180][7];
+uint8_t M[180][7];
+uint8_t M1[180][7];
 //Hora
 uint8_t Time = 20;
 uint8_t TimeMin = 49;
@@ -81,9 +104,9 @@ uint8_t Segs = 0;
 uint8_t Temp = 30;
 uint8_t Mes = 10;
 uint8_t Dia = 23;
-uint8_t year = 25;
+uint16_t year = 25;
 //Matrices para los numeros
-uint16_t Pun[10][7]={
+uint8_t Pun[10][7]={
 	{0,0,0,0,0,0,0}, 
 	{0,0,0,0,0,0,0},
 	{0,0,0,0,0,0,0},
@@ -95,20 +118,20 @@ uint16_t Pun[10][7]={
 	{0,0,0,0,0,0,0},
 	{0,0,0,0,0,0,0}
 };
-uint16_t C[10][7]={
+uint8_t C[10][7]={
 	{0,0,0,0,0,0,0}, 
 	{1,1,0,0,0,1,1},
 	{1,1,0,0,0,1,1},
 	{1,1,0,0,0,1,1},
 	{1,1,0,0,0,1,1},
 	{0,1,1,1,1,1,0},
-	{0,0,0,0,0,0,0},
-	{1,0,1,0,0,0,0},
-	{0,1,0,0,0,0,0},
+	{0,0,0,0,0,1,0},
+	{0,0,0,0,1,0,1},
+	{0,0,0,0,0,1,0},
 	{0,0,0,0,0,0,0}
 };
 
-uint16_t Diag[10][7]={
+uint8_t Diag[10][7]={
 	{0,0,0,0,0,0,0}, 
 	{0,0,0,0,0,1,1},
 	{0,0,0,0,1,1,1},
@@ -120,7 +143,7 @@ uint16_t Diag[10][7]={
 	{1,0,0,0,0,0,0},
 	{0,0,0,0,0,0,0}
 };
-uint16_t N0[10][7]={
+uint8_t N0[10][7]={
 	{0,0,0,0,0,0,0}, 
 	{0,0,1,1,1,0,0},
 	{0,1,1,0,1,1,0},
@@ -132,7 +155,7 @@ uint16_t N0[10][7]={
 	{0,0,1,1,1,0,0},
 	{0,0,0,0,0,0,0}
 };
-uint16_t N1[10][7]={
+uint8_t N1[10][7]={
 	{0,0,0,0,0,0,0}, 
 	{0,0,0,0,0,0,0},
 	{1,0,0,0,0,0,0},
@@ -144,7 +167,7 @@ uint16_t N1[10][7]={
 	{1,0,0,0,0,0,0},
 	{0,0,0,0,0,0,0}
 };
-uint16_t N2[10][7]={
+uint8_t N2[10][7]={
 	{0,0,0,0,0,0,0}, 
 	{0,0,0,0,1,1,0},
 	{1,0,0,1,0,0,1},
@@ -156,7 +179,7 @@ uint16_t N2[10][7]={
 	{1,1,0,0,0,0,1},
 	{0,0,0,0,0,0,0}
 };
-uint16_t N3[10][7]={
+uint8_t N3[10][7]={
 	{0,0,0,0,0,0,0}, 
 	{0,0,0,0,0,0,0},
 	{0,1,1,1,1,1,0},
@@ -168,7 +191,7 @@ uint16_t N3[10][7]={
 	{0,1,0,0,0,1,0},
 
 };
-uint16_t N4[10][7]={
+uint8_t N4[10][7]={
 	{0,0,0,0,0,0,0}, 
 	{1,1,1,1,1,1,1},
 	{1,1,1,1,1,1,1},
@@ -180,7 +203,7 @@ uint16_t N4[10][7]={
 	{0,0,0,1,1,1,1},
 	{0,0,0,0,0,0,0}
 };
-uint16_t N5[10][7]={
+uint8_t N5[10][7]={
 	{0,0,0,0,0,0,0}, 
 	{0,1,1,0,0,0,1},
 	{1,0,0,1,0,0,1},
@@ -192,7 +215,7 @@ uint16_t N5[10][7]={
 	{1,0,0,1,1,1,1},
 	{0,0,0,0,0,0,0}
 };
-uint16_t N6[10][7]={
+uint8_t N6[10][7]={
 	{0,0,0,0,0,0,0}, 
 	{0,1,1,0,0,0,0},
 	{1,0,0,1,0,0,1},
@@ -204,7 +227,7 @@ uint16_t N6[10][7]={
 	{0,1,1,1,1,1,0},
 	{0,0,0,0,0,0,0}
 };
-uint16_t N7[10][7]={
+uint8_t N7[10][7]={
 	{0,0,0,0,0,0,0}, 
 	{0,0,0,0,0,1,1},
 	{0,0,0,0,1,1,1},
@@ -216,7 +239,7 @@ uint16_t N7[10][7]={
 	{0,0,0,0,0,0,0},
 	{0,0,0,0,0,0,0}
 };
-uint16_t N8[10][7]={
+uint8_t N8[10][7]={
 	{0,0,0,0,0,0,0}, 
 	{0,1,1,0,1,1,0},
 	{1,0,0,1,0,0,1},
@@ -228,7 +251,7 @@ uint16_t N8[10][7]={
 	{0,1,1,0,1,1,0},
 	{0,0,0,0,0,0,0}
 };
-uint16_t N9[10][7]={
+uint8_t N9[10][7]={
 	{0,0,0,0,0,0,0}, 
 	{0,1,1,1,1,1,0},
 	{1,1,0,1,0,0,1},
@@ -287,7 +310,7 @@ static void Tarea_Proceso(void *parameter){
         // 3. ACTUALIZAR TIEMPO POR GRADO (Mover la lógica del temporizador aquí)
         if (g_freq_average > 0.1) {
             // Calcular el nuevo tiempo en microsegundos (ticks)
-            alarm_count_us = (uint64_t)(1000000.0 / ((g_freq -0.65)* 180.0));
+            alarm_count_us = (uint64_t)(1000000.0 / ((g_freq + dir)* 180.0));
             // Aplicar un límite inferior para evitar tiempos irrazonablemente cortos.
             if (alarm_count_us < 300) { // Límite inferior de 100 us (10kHz)
                 alarm_count_us = 300;
@@ -309,6 +332,7 @@ static void Tarea_AumHora(void *parameter){
         
         if (notificacion_recibida == pdTRUE) {
             Segs++;
+        
             if (Segs>=60) {
 				Segs=0;
 				TimeMin++;
@@ -361,6 +385,7 @@ static void Tarea_Actualizar_Matriz(void *parameter){
         // Esperar la notificación de la ISR (AumentoHoraCallback)
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY); // Esperar indefinidamente
         
+
         uint8_t Hora = Time/10;
         uint8_t HoraRes = Time%10;
         uint8_t Min = TimeMin/10;
@@ -371,8 +396,8 @@ static void Tarea_Actualizar_Matriz(void *parameter){
         uint8_t DiaRes = Dia%10;
         uint8_t MesDec = Mes/10;
         uint8_t MesRes = Mes%10;
-        uint8_t yearDec = year/10;
-        uint8_t yearRes = year%10;
+        uint8_t yearDec = (year)/10;
+        uint8_t yearRes = (year)%10;
         // Ejecutar el trabajo pesado: Copiar la matriz
         for (int y = 0; y<10; y++) {
             for (int j = 0; j<7; j++) {
@@ -550,90 +575,90 @@ static void Tarea_Actualizar_Matriz(void *parameter){
                     
                     switch (TempDec) {
 					case 0:
-					M[y+130][j]=N0[y][j];
-                    M1[y+40][j]=N0[y][j];
+					M[y+135][j]=N0[y][j];
+                    M1[y+45][j]=N0[y][j];
                     break;
                     case 1:
-					M[y+130][j]=N1[y][j];
-                    M1[y+40][j]=N1[y][j];
+					M[y+135][j]=N1[y][j];
+                    M1[y+45][j]=N1[y][j];
                     break;
                     case 2:
-					M[y+130][j]=N2[y][j];
-                    M1[y+40][j]=N2[y][j];
+					M[y+135][j]=N2[y][j];
+                    M1[y+45][j]=N2[y][j];
                     break;
                     case 3:
-					M[y+130][j]=N3[y][j];
-                    M1[y+40][j]=N3[y][j];
+					M[y+135][j]=N3[y][j];
+                    M1[y+45][j]=N3[y][j];
                     break;
                     case 4:
-					M[y+130][j]=N4[y][j];
-                    M1[y+40][j]=N4[y][j];
+					M[y+135][j]=N4[y][j];
+                    M1[y+45][j]=N4[y][j];
                     break;
                     case 5:
-					M[y+130][j]=N5[y][j];
-                    M1[y+40][j]=N5[y][j];
+					M[y+135][j]=N5[y][j];
+                    M1[y+45][j]=N5[y][j];
                     break;
                     case 6:
-					M[y+130][j]=N6[y][j];
-                    M1[y+40][j]=N6[y][j];
+					M[y+135][j]=N6[y][j];
+                    M1[y+45][j]=N6[y][j];
                     break;
                     case 7:
-					M[y+130][j]=N7[y][j];
-                    M1[y+40][j]=N7[y][j];
+					M[y+135][j]=N7[y][j];
+                    M1[y+45][j]=N7[y][j];
                     break;
                     case 8:
-					M[y+130][j]=N8[y][j];
-                    M1[y+40][j]=N8[y][j];
+					M[y+135][j]=N8[y][j];
+                    M1[y+45][j]=N8[y][j];
                     break;
                     case 9:
-					M[y+130][j]=N9[y][j];
-                    M1[y+40][j]=N9[y][j];
+					M[y+135][j]=N9[y][j];
+                    M1[y+45][j]=N9[y][j];
                     break;
                     }
                     switch (TempRes) {
 					case 0:
-					M[y+120][j]=N0[y][j];
-                    M1[y+30][j]=N0[y][j];
+					M[y+125][j]=N0[y][j];
+                    M1[y+35][j]=N0[y][j];
                     break;
                     case 1:
-					M[y+120][j]=N1[y][j];
-                    M1[y+30][j]=N1[y][j];
+					M[y+125][j]=N1[y][j];
+                    M1[y+35][j]=N1[y][j];
                     break;
                     case 2:
-					M[y+120][j]=N2[y][j];
-                    M1[y+30][j]=N2[y][j];
+					M[y+125][j]=N2[y][j];
+                    M1[y+35][j]=N2[y][j];
                     break;
                     case 3:
-					M[y+120][j]=N3[y][j];
-                    M1[y+30][j]=N3[y][j];
+					M[y+125][j]=N3[y][j];
+                    M1[y+35][j]=N3[y][j];
                     break;
                     case 4:
-					M[y+120][j]=N4[y][j];
-                    M1[y+30][j]=N4[y][j];
+					M[y+125][j]=N4[y][j];
+                    M1[y+35][j]=N4[y][j];
                     break;
                     case 5:
-					M[y+120][j]=N5[y][j];
-                    M1[y+30][j]=N5[y][j];
+					M[y+125][j]=N5[y][j];
+                    M1[y+35][j]=N5[y][j];
                     break;
                     case 6:
-					M[y+120][j]=N6[y][j];
-                    M1[y+30][j]=N6[y][j];
+					M[y+125][j]=N6[y][j];
+                    M1[y+35][j]=N6[y][j];
                     break;
                     case 7:
-					M[y+120][j]=N7[y][j];
-                    M1[y+30][j]=N7[y][j];
+					M[y+125][j]=N7[y][j];
+                    M1[y+35][j]=N7[y][j];
                     break;
                     case 8:
-					M[y+120][j]=N8[y][j];
-                    M1[y+30][j]=N8[y][j];
+					M[y+125][j]=N8[y][j];
+                    M1[y+35][j]=N8[y][j];
                     break;
                     case 9:
-					M[y+120][j]=N9[y][j];
-                    M1[y+30][j]=N9[y][j];
+					M[y+125][j]=N9[y][j];
+                    M1[y+35][j]=N9[y][j];
                     break;
                     }
-                    M[y+110][j]=C[y][j];
-                    M1[y+20][j]=C[y][j];
+                    M[y+115][j]=C[y][j];
+                    M1[y+25][j]=C[y][j];
                     //para la fecha
                     switch (DiaDec) {
 					case 0:
@@ -870,8 +895,276 @@ static void Tarea_Actualizar_Matriz(void *parameter){
 
     }
 }
+
+// INICIAR SERVIDOR WEB (MODIFICADO)
+// --------------------------------------------------------------------------------------------------
+static httpd_handle_t Iniciar_Servidor_Web(void) {
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.core_id = 1;
+    config.max_uri_handlers =6;
+	config.stack_size          = 8192;
+	config.lru_purge_enable    = true;
+
+    httpd_handle_t server = NULL;
+    if (httpd_start(&server, &config) != ESP_OK) return NULL;
+		
+    // --- Manejadores GET para los archivos (del ejemplo original) ---
+    httpd_uri_t root_get = { .uri = "/", .method = HTTP_GET, .handler = root_get_handler };
+    httpd_register_uri_handler(server, &root_get);
+    httpd_uri_t mainhtml_get = { .uri = "/Reloj_POV.html", .method = HTTP_GET, .handler = mainhtml_get_handler };
+    httpd_register_uri_handler(server, &mainhtml_get);
+    httpd_uri_t favicon_get = { .uri = "/favicon.ico", .method = HTTP_GET, .handler = favicon_get_handler };
+    httpd_register_uri_handler(server, &favicon_get);
+    httpd_uri_t temp_uri = {
+        .uri = "/set-temp", 
+        .method = HTTP_GET, 
+        .handler = set_temp_handler
+    };
+    httpd_register_uri_handler(server, &temp_uri);
+    // --- ¡NUEVO! Manejadores GET para nuestra API de comandos ---
+
+    httpd_uri_t date_uri = {
+        .uri = "/set-time", .method = HTTP_GET, .handler = set_date_handler
+    };
+    httpd_register_uri_handler(server, &date_uri);
+
+    httpd_uri_t motor_dir_uri = {
+        .uri = "/set-motor", .method = HTTP_GET, .handler = set_dir_handler
+    };
+    httpd_register_uri_handler(server, &motor_dir_uri);
+
+    return server;
+}
+// MANEJADORES DE LA API DE COMANDOS
+// --------------------------------------------------------------------------------------------------
+static esp_err_t set_date_handler(httpd_req_t *req) {
+    char buf[150];
+    char value[10]; // Buffer temporal para cada valor
+
+    // 1. Obtener la cadena de consulta (query string) de la URL
+    if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) == ESP_OK) {
+        
+        ESP_LOGI(TAG, "Recibido comando de hora: %s", buf);
+
+        // 2. Buscar y extraer cada variable
+        // atoi() convierte de ASCII (texto) a Integer (número entero)
+        
+        if (httpd_query_key_value(buf, "h", value, sizeof(value)) == ESP_OK) {
+            Time = atoi(value); 
+        }
+        if (httpd_query_key_value(buf, "m", value, sizeof(value)) == ESP_OK) {
+            TimeMin = atoi(value);
+        }
+        if (httpd_query_key_value(buf, "s", value, sizeof(value)) == ESP_OK) {
+            Segs = atoi(value);
+        }
+        if (httpd_query_key_value(buf, "D", value, sizeof(value)) == ESP_OK) {
+            Dia = atoi(value);
+        }
+        if (httpd_query_key_value(buf, "MM", value, sizeof(value)) == ESP_OK) {
+            Mes = atoi(value);
+        }
+        if (httpd_query_key_value(buf, "Y", value, sizeof(value)) == ESP_OK) {
+            year = atoi(value) % 100; // Aseguramos que sea formato de 2 dígitos (ej. 2025 -> 25)
+        }
+        
+        // Forzamos una actualización inmediata de la matriz para que se vea el cambio
+        xTaskNotifyGive(Handle_Tarea_Actualizacion_Matriz);
+        
+        ESP_LOGI(TAG, "Hora actualizada a: %02d:%02d:%02d Fecha: %02d/%02d/%02d", 
+                 Time, TimeMin, Segs, Dia, Mes, year);
+                 
+        httpd_resp_send(req, "Hora Sincronizada OK", HTTPD_RESP_USE_STRLEN);
+    } else {
+        httpd_resp_send_404(req);
+    }
+    return ESP_OK;
+}
+static esp_err_t set_dir_handler(httpd_req_t *req) {
+    char buf[100];
+    char value[20];
+
+    if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) == ESP_OK) {
+        
+        if (httpd_query_key_value(buf, "val", value, sizeof(value)) == ESP_OK) {
+            // atof() convierte de ASCII a Float
+            float nueva_dir = atof(value);
+            
+            // Actualizamos la variable global 'dir'
+            dir = nueva_dir;
+            
+            ESP_LOGI(TAG, "Dirección/Offset motor actualizado a: %.2f", dir);
+            
+            // Opcional: Si el motor está en modo estático (dir = -0.5 o similar),
+            // podrías querer forzar el timer aquí, pero tu Tarea_Proceso ya lo hace
+            // dinámicamente en el siguiente ciclo.
+        }
+        
+        httpd_resp_send(req, "Motor Set OK", HTTPD_RESP_USE_STRLEN);
+    } else {
+        httpd_resp_send_404(req);
+    }
+    return ESP_OK;
+}
+
+static esp_err_t set_temp_handler(httpd_req_t *req) {
+    char buf[100];
+    char value[10];
+
+    if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) == ESP_OK) {
+        // Buscamos el parametro "val"
+        if (httpd_query_key_value(buf, "val", value, sizeof(value)) == ESP_OK) {
+            // Convertimos texto a entero y actualizamos la variable global
+            Temp = atoi(value); 
+            
+            // Forzamos actualización de la matriz para ver el cambio inmediato
+            if(Handle_Tarea_Actualizacion_Matriz != NULL) {
+                xTaskNotifyGive(Handle_Tarea_Actualizacion_Matriz);
+            }
+            
+            ESP_LOGI(TAG, "Temperatura actualizada via Web: %d C", Temp);
+        }
+        httpd_resp_send(req, "Temp OK", HTTPD_RESP_USE_STRLEN);
+    } else {
+        httpd_resp_send_404(req);
+    }
+    return ESP_OK;
+}
+// Funciones basicas del servidor web
+// --------------------------------------------------------------------------------------------------
+esp_err_t FileSystemInit(void){
+	ESP_LOGI(TAG, "Iniciando montaje del Sistema de Archivos SPIFFS.");
+	esp_vfs_spiffs_conf_t  DiskConf = {
+		.base_path = "/Datos",
+		.partition_label = "Datos",
+		.max_files = 5,
+		.format_if_mount_failed = false
+	};
+	esp_err_t result = esp_vfs_spiffs_register(&DiskConf);
+	if (result != ESP_OK){
+		ESP_LOGE(TAG, "Error al montar SPIFFS (%s)", esp_err_to_name(result));;
+		return result;
+	}else{
+		ESP_LOGI(TAG, "Sistema de Archivos SPIFFS listo.");
+	}
+	size_t EspacioTotal, EspacioOcupado;
+	if(esp_spiffs_info(DiskConf.partition_label, &EspacioTotal, &EspacioOcupado) == ESP_OK){
+		printf("Espacio total: %d, Espacio Utilizado, %d, Espacio Libre: %d\n", EspacioTotal, EspacioOcupado, EspacioTotal-EspacioOcupado);
+	}else{
+		ESP_LOGE(TAG, "Error al tratar de obtener informacion de la particion.");
+	}
+    return ESP_OK;
+}
+
+static void WiFi_STA_Initialization(void){
+    esp_netif_init();
+    esp_event_loop_create_default();
+    esp_netif_create_default_wifi_sta();
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    esp_wifi_init(&cfg);
+    esp_event_handler_instance_t instance_any_id;
+    esp_event_handler_instance_t instance_got_ip;
+    esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, &instance_any_id);
+    esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, &instance_got_ip);
+    wifi_config_t wifi_config = {
+    	.sta = {
+        	.ssid = "POCOleo",
+        	.password = "manitochido"
+    	}
+	};
+	esp_wifi_set_mode(WIFI_MODE_STA);
+    esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+    esp_wifi_start();
+}
+
+static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data){
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        esp_wifi_connect();
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        ESP_LOGI(TAG, "Desconectado, reintentando...");
+        esp_wifi_connect();
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
+        printf("Direccion IP:" IPSTR "\n", IP2STR(&event->ip_info.ip));
+    }
+}
+
+// GET para "/"
+static esp_err_t root_get_handler(httpd_req_t *req) {
+    const char *page = "/Datos/Reloj_POV.html"; // Asume que tu HTML se llama 'main.html'
+    httpd_resp_set_type(req, "text/html");
+    return EnviarArchivo(req, page);
+}
+
+// GET para "main.html"
+static esp_err_t mainhtml_get_handler(httpd_req_t *req) {
+	char filepath[128];
+	strlcpy(filepath, "/Datos", sizeof(filepath));
+    strlcat(filepath, req->uri, sizeof(filepath));
+    ESP_LOGI(TAG, "Peticion: %s --> %s", req->uri, filepath);
+    httpd_resp_set_type(req, get_mime_type(filepath));
+    return EnviarArchivo(req, filepath);
+}
+
+// GET para "favicon.ico"
+static esp_err_t favicon_get_handler(httpd_req_t *req) {
+	char filepath[128];
+	strlcpy(filepath, "/Datos", sizeof(filepath));
+    strlcat(filepath, req->uri, sizeof(filepath));
+    ESP_LOGI(TAG, "Peticion: %s --> %s", req->uri, filepath);
+    httpd_resp_set_type(req, get_mime_type(filepath));
+    return EnviarArchivo(req, filepath);
+}
+
+// Función para enviar archivos desde SPIFFS
+static esp_err_t EnviarArchivo(httpd_req_t *req, const char *path){
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        ESP_LOGE(TAG, "No se pudo abrir archivo: %s", path);
+        // Si no se encuentra, envía el HTML principal
+        // (esto es útil si el navegador pide algo como /index.html)
+        f = fopen("/Datos/main.html", "rb");
+        if (!f) {
+            httpd_resp_send_404(req);
+            return ESP_FAIL;
+        }
+    }
+    char buffer[1024];
+    size_t bytes;
+    while ((bytes = fread(buffer, 1, sizeof(buffer), f)) > 0) {
+        httpd_resp_send_chunk(req, buffer, bytes);
+    }
+    fclose(f);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+// Función para obtener el tipo MIME
+static const char *get_mime_type(const char *path){
+    const char *extencion = strrchr(path, '.');
+    if (!extencion) return "text/plain";
+    extencion++;
+	if (strcasecmp(extencion, "html") == 0 || strcasecmp(extencion, "htm") == 0) return "text/html";
+	if (strcasecmp(extencion, "css") == 0) return "text/css";
+	if (strcasecmp(extencion, "js") == 0 || strcasecmp(extencion, "mjs") == 0) return "application/javascript";
+    if (strcasecmp(extencion, "jpg") == 0 || strcasecmp(extencion, "jpeg") == 0) return "image/jpeg";
+    if (strcasecmp(extencion, "png") == 0)  return "image/png";
+    if (strcasecmp(extencion, "gif") == 0)  return "image/gif";
+    if (strcasecmp(extencion, "ico") == 0)  return "image/x-icon";
+    return "text/plain";
+}
+
 void app_main(void)
 {
+
+    //inicialirzar pagina
+    nvs_flash_init();
+    FileSystemInit();
+    WiFi_STA_Initialization();
+    
+    Iniciar_Servidor_Web();
+    ESP_LOGI(TAG, "Servidor listo");
+    
 	//gpios
 	gpio_config_t io_conf;
 	io_conf.pin_bit_mask = (1ULL<<LED1b | 1ULL<<LED2b | 1ULL<<LED3b | 1ULL<<LED4b | 1ULL<<LED5b | 1ULL<<LED6b | 1ULL<<LED7b | 1ULL<<LED7 | 1ULL<<LED6 | 1ULL<<LED5 | 1ULL<<LED4 | 1ULL<<LED3 | 1ULL<<LED1 | 1ULL<<LED2);
@@ -907,7 +1200,7 @@ void app_main(void)
 	//gptimer_handle_t gptimer_AumentoHora = NULL;
 	gptimer_new_timer(&Timer_Config, &gptimer_AumentoHora);
 	gptimer_alarm_config_t CambioHora = {
-		.alarm_count = 50000,  //micro segundos
+		.alarm_count = 1000000,  //micro segundos
 		.reload_count = 0,
 		.flags.auto_reload_on_alarm = true
 	};
@@ -919,7 +1212,7 @@ void app_main(void)
 	//tareas
 	xTaskCreatePinnedToCore(Tarea_Actualizar_Matriz, "ActualizarMatriz", 2048, NULL, 4, &Handle_Tarea_Actualizacion_Matriz, 0);
 	xTaskNotifyGive(Handle_Tarea_Actualizacion_Matriz);
-	xTaskCreatePinnedToCore(Tarea_Proceso, "Calculo", 4096, NULL, 5, &Handle_Tarea_Calculo, 0);
+	xTaskCreatePinnedToCore(Tarea_Proceso, "Calculo", 4096, NULL, 5, &Handle_Tarea_Calculo,1);
 	xTaskCreatePinnedToCore(Tarea_AumHora, "AumHora", 4096, NULL, 5, &Handle_Tarea_AumHora, 1);
 	
 	  // 4. Configurar MCPWM (Lectura RPM) en PIN 15

@@ -222,7 +222,7 @@
 </head>
 <body>
 
-    <h1>Relo POV</h1>
+    <h1>Reloj POV</h1>
     <h3>Peraza & Marfil | Proyecto Final</h3>
 
     <div class="pov-container">
@@ -251,9 +251,9 @@
         <button class="btn btn-time" onclick="syncTime()">Sincronizar Hora</button>
         
         <div class="direction-group">
-            <button class="btn btn-dir" id="btn-ccw" onclick="setMotor(-0.65, 'ccw')">CCW</button>
-            <button class="btn btn-dir active-static" id="btn-static" onclick="setMotor(-0.5, 'static')">STATIC</button>
-            <button class="btn btn-dir" id="btn-cw" onclick="setMotor(0.5, 'cw')">CW</button>
+            <button class="btn btn-dir" id="btn-ccw" onclick="setMotor(-0.55, 'ccw')">CCW</button>
+            <button class="btn btn-dir active-static" id="btn-static" onclick="setMotor(-0.4, 'static')">STATIC</button>
+            <button class="btn btn-dir" id="btn-cw" onclick="setMotor(-.25, 'cw')">CW</button>
         </div>
         <div class="log" id="statusLog">Sistema Iniciado. Esperando...</div>
     </div>
@@ -327,21 +327,55 @@
         }
 
         function syncTime() {
+            // 1. SINCRONIZAR HORA (Lo que ya tenías)
             const now = new Date();
             const params = new URLSearchParams({
                 h: now.getHours(),
                 m: now.getMinutes(),
                 s: now.getSeconds(),
                 D: now.getDate(),
-                M: now.getMonth() + 1,
+                MM: now.getMonth() + 1,
                 Y: now.getFullYear()
             });
 
-            log("Enviando hora al ESP32...");
-            
+            log("Sincronizando Hora...");
             fetch(`/set-time?${params.toString()}`)
-                .then(r => r.ok ? log("Hora sincronizada OK.") : log("ESP recibido, pero con error."))
-                .catch(e => log("Error: No hay conexión con ESP."));
+                .then(r => log("Hora enviada."))
+                .catch(e => log("Error enviando hora."));
+
+            // 2. OBTENER Y ENVIAR TEMPERATURA (Nuevo)
+            log("Obteniendo clima...");
+            
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(position => {
+                    const lat = position.coords.latitude;
+                    const lon = position.coords.longitude;
+                    
+                    // Usamos la API de Open-Meteo (Gratis, sin API Key)
+                    const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true`;
+
+                    fetch(weatherUrl)
+                        .then(response => response.json())
+                        .then(data => {
+                            const temperatura = Math.round(data.current_weather.temperature);
+                            log(`Clima obtenido: ${temperatura}°C`);
+                            
+                            // Enviar al ESP32
+                            fetch(`/set-temp?val=${temperatura}`)
+                                .then(r => log("Temperatura actualizada en Reloj."))
+                                .catch(e => log("Error enviando temp al ESP."));
+                        })
+                        .catch(err => {
+                            log("Error: No hay internet para el clima. Usando 25°C");
+                            // Fallback si no hay internet: mandar un valor default o pedir manual
+                            fetch(`/set-temp?val=25`);
+                        });
+                }, error => {
+                    log("Error: Permiso GPS denegado.");
+                });
+            } else {
+                log("Navegador no soporta Geolocalización.");
+            }
         }
 
         function setMotor(val, mode) {
