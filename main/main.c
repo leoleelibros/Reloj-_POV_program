@@ -1,5 +1,12 @@
+#include <stdint.h>
+#include <stdlib.h>
 #include <stdio.h>
-#include <string.h>
+#include <stdbool.h>
+#include <unistd.h>
+#include "driver/gpio.h"
+#include "driver/gptimer.h"
+#include "esp_event.h"
+#include "esp_intr_types.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_system.h"
@@ -9,6 +16,17 @@
 #include "esp_now.h"
 #include "driver/gpio.h"
 #include "driver/mcpwm_prelude.h"
+#include "esp_intr_alloc.h"
+#include "portmacro.h"
+#include "http_parser.h"
+#include "esp_vfs.h"
+#include "esp_spiffs.h"
+#include "esp_http_server.h"
+#include "driver/adc_types_legacy.h"
+#include "freertos/idf_additions.h"
+#include "hal/adc_types.h"
+#include "portmacro.h"
+#include <driver/adc.h>
 
 // --- CONFIGURACIÓN ---
 #define SENSOR_HALL_GPIO 15
@@ -41,8 +59,205 @@ uint32_t CapturaAnterior = 0;
 uint32_t TicksDiferencia = 0;
 static float g_rpm = 0.0;
 static float g_freq = 0.0;
+static float g_freq_last = 0.0;
+float freq_history[FILTER_WINDOW_SIZE] = {0}; // Buffer
+int history_idx = 0;                         // Puntero del buffer
+float freq_sum = 0.0;                         // Suma acumulada
+float freq_average = 0.0;
+volatile float g_freq_average = 0.0;
+static float dir = -.4; //direccion del motor
+//handlers tasks
+TaskHandle_t Handle_Tarea_Actualizacion_Matriz = NULL;
+TaskHandle_t Handle_Tarea_Calculo = NULL;
+TaskHandle_t Handle_Tarea_AumHora = NULL;
+gptimer_handle_t gptimer_grado = NULL;
+gptimer_handle_t gptimer_AumentoHora = NULL;
 
-// --- CALLBACK CON DEBOUNCING ---
+//manejadores de API
+static esp_err_t set_date_handler(httpd_req_t *req);
+static esp_err_t set_dir_handler(httpd_req_t *req);
+static esp_err_t set_temp_handler(httpd_req_t *req);
+
+//manejadoree de archivios SPIFFS
+static esp_err_t root_get_handler(httpd_req_t *req);
+static esp_err_t mainhtml_get_handler(httpd_req_t *req);
+static esp_err_t favicon_get_handler(httpd_req_t *req);
+
+static esp_err_t EnviarArchivo(httpd_req_t *req, const char *path);
+static const char *get_mime_type(const char *path);
+esp_err_t FileSystemInit(void);
+static void WiFi_STA_Initialization(void);
+static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data);
+
+//matriz principal
+uint8_t M[180][7];
+uint8_t M1[180][7];
+//Hora
+uint8_t Time = 20;
+uint8_t TimeMin = 49;
+uint8_t Segs = 0;
+uint8_t Temp = 30;
+uint8_t Mes = 10;
+uint8_t Dia = 23;
+uint16_t year = 25;
+//Matrices para los numeros
+uint8_t Pun[10][7]={
+	{0,0,0,0,0,0,0}, 
+	{0,0,0,0,0,0,0},
+	{0,0,0,0,0,0,0},
+	{0,0,0,0,0,0,0},
+	{0,1,0,0,0,1,0},
+	{1,1,1,0,1,1,1},
+	{0,1,0,0,0,1,0},
+	{0,0,0,0,0,0,0},
+	{0,0,0,0,0,0,0},
+	{0,0,0,0,0,0,0}
+};
+uint8_t C[10][7]={
+	{0,0,0,0,0,0,0}, 
+	{1,1,0,0,0,1,1},
+	{1,1,0,0,0,1,1},
+	{1,1,0,0,0,1,1},
+	{1,1,0,0,0,1,1},
+	{0,1,1,1,1,1,0},
+	{0,0,0,0,0,1,0},
+	{0,0,0,0,1,0,1},
+	{0,0,0,0,0,1,0},
+	{0,0,0,0,0,0,0}
+};
+
+uint8_t Diag[10][7]={
+	{0,0,0,0,0,0,0}, 
+	{0,0,0,0,0,1,1},
+	{0,0,0,0,1,1,1},
+	{0,0,0,1,1,1,0},
+	{0,0,1,1,1,0,0},
+	{0,1,1,1,0,0,0},
+	{1,1,1,0,0,0,0},
+	{1,1,0,0,0,0,0},
+	{1,0,0,0,0,0,0},
+	{0,0,0,0,0,0,0}
+};
+uint8_t N0[10][7]={
+	{0,0,0,0,0,0,0}, 
+	{0,0,1,1,1,0,0},
+	{0,1,1,0,1,1,0},
+	{1,1,0,0,0,1,1},
+	{1,0,0,0,0,0,1},
+	{1,0,0,0,0,0,1},
+	{1,1,0,0,0,1,1},
+	{0,1,1,0,1,1,0},
+	{0,0,1,1,1,0,0},
+	{0,0,0,0,0,0,0}
+};
+uint8_t N1[10][7]={
+	{0,0,0,0,0,0,0}, 
+	{0,0,0,0,0,0,0},
+	{1,0,0,0,0,0,0},
+	{1,0,0,0,0,0,0},
+	{1,1,1,1,1,1,1},
+	{1,1,1,1,1,1,1},
+	{1,0,0,0,1,1,0},
+	{1,0,0,0,1,0,0},
+	{1,0,0,0,0,0,0},
+	{0,0,0,0,0,0,0}
+};
+uint8_t N2[10][7]={
+	{0,0,0,0,0,0,0}, 
+	{0,0,0,0,1,1,0},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,1,0,0,0,1},
+	{1,1,0,0,0,0,1},
+	{0,0,0,0,0,0,0}
+};
+uint8_t N3[10][7]={
+	{0,0,0,0,0,0,0}, 
+	{0,0,0,0,0,0,0},
+	{0,1,1,1,1,1,0},
+	{1,1,1,1,1,1,1},
+	{1,1,0,1,0,1,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,1,0,0,0,1,1},
+	{0,1,0,0,0,1,0},
+
+};
+uint8_t N4[10][7]={
+	{0,0,0,0,0,0,0}, 
+	{1,1,1,1,1,1,1},
+	{1,1,1,1,1,1,1},
+	{0,0,1,1,0,0,0},
+	{0,0,1,1,0,0,0},
+	{0,0,1,1,0,0,0},
+	{0,0,1,1,0,0,0},
+	{0,0,1,1,0,1,1},
+	{0,0,0,1,1,1,1},
+	{0,0,0,0,0,0,0}
+};
+uint8_t N5[10][7]={
+	{0,0,0,0,0,0,0}, 
+	{0,1,1,0,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,1,1,1},
+	{0,0,0,0,0,0,0}
+};
+uint8_t N6[10][7]={
+	{0,0,0,0,0,0,0}, 
+	{0,1,1,0,0,0,0},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{0,1,1,1,1,1,0},
+	{0,0,0,0,0,0,0}
+};
+uint8_t N7[10][7]={
+	{0,0,0,0,0,0,0}, 
+	{0,0,0,0,0,1,1},
+	{0,0,0,0,1,1,1},
+	{0,0,0,1,1,1,1},
+	{0,0,1,1,0,1,1},
+	{0,1,1,0,0,1,1},
+	{1,1,0,0,0,1,1},
+	{1,0,0,0,0,1,1},
+	{0,0,0,0,0,0,0},
+	{0,0,0,0,0,0,0}
+};
+uint8_t N8[10][7]={
+	{0,0,0,0,0,0,0}, 
+	{0,1,1,0,1,1,0},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{0,1,1,0,1,1,0},
+	{0,0,0,0,0,0,0}
+};
+uint8_t N9[10][7]={
+	{0,0,0,0,0,0,0}, 
+	{0,1,1,1,1,1,0},
+	{1,1,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,1,0,0,1},
+	{1,0,0,0,1,1,0},
+	{0,0,0,0,0,0,0}
+};
 static bool Capture_Callback_Function(mcpwm_cap_channel_handle_t cap_chan, const mcpwm_capture_event_data_t *edata, void *user_data){
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
     uint32_t current_capture = edata->cap_value;
@@ -57,7 +272,6 @@ static bool Capture_Callback_Function(mcpwm_cap_channel_handle_t cap_chan, const
     }
     return xHigherPriorityTaskWoken == pdTRUE;
 }
-
 static void Tarea_Proceso(void *parameter){
     
     // Variables para el Moving Average
@@ -102,27 +316,65 @@ static void Tarea_mandar_datos(void *parameter){
         
         
     }
+    return ESP_OK;
 }
-static void wifi_espnow_init(void) {
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_start());
+// Funciones basicas del servidor web
+// --------------------------------------------------------------------------------------------------
+esp_err_t FileSystemInit(void){
+	ESP_LOGI(TAG, "Iniciando montaje del Sistema de Archivos SPIFFS.");
+	esp_vfs_spiffs_conf_t  DiskConf = {
+		.base_path = "/Datos",
+		.partition_label = "Datos",
+		.max_files = 5,
+		.format_if_mount_failed = false
+	};
+	esp_err_t result = esp_vfs_spiffs_register(&DiskConf);
+	if (result != ESP_OK){
+		ESP_LOGE(TAG, "Error al montar SPIFFS (%s)", esp_err_to_name(result));;
+		return result;
+	}else{
+		ESP_LOGI(TAG, "Sistema de Archivos SPIFFS listo.");
+	}
+	size_t EspacioTotal, EspacioOcupado;
+	if(esp_spiffs_info(DiskConf.partition_label, &EspacioTotal, &EspacioOcupado) == ESP_OK){
+		printf("Espacio total: %d, Espacio Utilizado, %d, Espacio Libre: %d\n", EspacioTotal, EspacioOcupado, EspacioTotal-EspacioOcupado);
+	}else{
+		ESP_LOGE(TAG, "Error al tratar de obtener informacion de la particion.");
+	}
+    return ESP_OK;
+}
 
-    // Iniciar ESP-NOW
-    ESP_ERROR_CHECK(esp_now_init());
-    
-    // Registrar el Peer de Broadcast
-    esp_now_peer_info_t peerInfo = {};
-    memcpy(peerInfo.peer_addr, broadcast_mac, 6);
-    peerInfo.channel = 0;  // 0 = usa el canal actual del wifi
-    peerInfo.encrypt = false;
-    
-    ESP_ERROR_CHECK(esp_now_add_peer(&peerInfo));
-    ESP_LOGI(TAG, "ESP-NOW Iniciado en modo Broadcast");
+static void WiFi_STA_Initialization(void){
+    esp_netif_init();
+    esp_event_loop_create_default();
+    esp_netif_create_default_wifi_sta();
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    esp_wifi_init(&cfg);
+    esp_event_handler_instance_t instance_any_id;
+    esp_event_handler_instance_t instance_got_ip;
+    esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, &instance_any_id);
+    esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, &instance_got_ip);
+    wifi_config_t wifi_config = {
+    	.sta = {
+        	.ssid = "POCOleo",
+        	.password = "manitochido"
+    	}
+	};
+	esp_wifi_set_mode(WIFI_MODE_STA);
+    esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+    esp_wifi_start();
+}
+
+static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data){
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        esp_wifi_connect();
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        ESP_LOGI(TAG, "Desconectado, reintentando...");
+        esp_wifi_connect();
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
+        printf("Direccion IP:" IPSTR "\n", IP2STR(&event->ip_info.ip));
+    }
 }
 
 static void Tarea_Dibujar_POV(void *parameter) {
@@ -174,7 +426,15 @@ void app_main(void)
         ESP_ERROR_CHECK(nvs_flash_erase());
         ret = nvs_flash_init();
     }
-    ESP_ERROR_CHECK(ret);
+    char buffer[1024];
+    size_t bytes;
+    while ((bytes = fread(buffer, 1, sizeof(buffer), f)) > 0) {
+        httpd_resp_send_chunk(req, buffer, bytes);
+    }
+    fclose(f);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
 
     // 2. Iniciar WiFi y ESP-NOW
     wifi_espnow_init();
@@ -208,7 +468,12 @@ void app_main(void)
     ESP_ERROR_CHECK(mcpwm_capture_channel_enable(Handler_CaptureChannel));
     ESP_ERROR_CHECK(mcpwm_capture_timer_enable(Handle_CaptureTimer));
     ESP_ERROR_CHECK(mcpwm_capture_timer_start(Handle_CaptureTimer));
-    vTaskDelete(NULL);
-    // No borramos app_main para que FreeRTOS no se queje, o usamos un loop infinito.
-    while(1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+
+	
+	gptimer_enable(gptimer_grado);
+	gptimer_start(gptimer_grado);
+	gptimer_enable(gptimer_AumentoHora);
+	gptimer_start(gptimer_AumentoHora);
+	
+ 
 }
